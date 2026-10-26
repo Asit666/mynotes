@@ -10,5 +10,10 @@ public record GenerateNoteRequest(
 		@NotBlank @Size(max = 200) String videoTitle,
 		@NotBlank @Size(max = 2048) String videoUrl,
 		@Min(0) long timestampSeconds,
-		@NotBlank @Size(max = 30000) String transcriptText) {
+		@NotBlank @Size(max = 30000) String transcriptText,
+		@Size(max = 5_000_000) String screenshotBase64) {
+
+	public GenerateNoteRequest(String provider, String model, String videoTitle, String videoUrl, long timestampSeconds, String transcriptText) {
+		this(provider, model, videoTitle, videoUrl, timestampSeconds, transcriptText, null);
+	}
 }

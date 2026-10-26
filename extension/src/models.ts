@@ -1,5 +1,6 @@
 export type SessionStatus = 'active' | 'paused' | 'completed'
 export type ProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
+export type AiProvider = 'OPENAI' | 'ANTHROPIC' | 'GEMINI'
 
 export interface LearningSession {
   id: string
@@ -24,6 +25,7 @@ export interface VideoSnapshot {
   isPlaying: boolean
   transcriptText: string
   platformName: string
+  screenshotDataUrl?: string
 }
 
 export interface VideoCapture {
@@ -67,12 +69,14 @@ export type ExtensionMessage =
   | { type: 'CAPTURE_NOW' }
   | { type: 'CAPTURE_RETRY'; captureId: string }
   | { type: 'SET_CAPTURE_INTERVAL'; captureIntervalSeconds: number }
+  | { type: 'SET_PROVIDER_PREFERENCES'; provider: AiProvider; model: string }
   | { type: 'CONTENT_GET_VIDEO_STATE' }
   | { type: 'CONTENT_SET_SESSION'; session: LearningSession | null }
   | { type: 'CONTENT_CAPTURE'; snapshot: VideoSnapshot }
   | { type: 'CONTENT_VIDEO_CHANGED' }
   | { type: 'DATA_UPDATED' }
   | { type: 'SEEK_VIDEO'; sessionId: string; timestampSeconds: number }
+  | { type: 'BACKEND_FETCH'; path: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }
 
 export interface ExtensionResponse {
   success: boolean
@@ -81,4 +85,5 @@ export interface ExtensionResponse {
   video?: VideoSnapshot | null
   capture?: VideoCapture
   audioBase64?: string
+  data?: unknown
 }

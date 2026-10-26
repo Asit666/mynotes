@@ -38,9 +38,9 @@ public class ApiConfiguration {
 			@Override
 			public void addCorsMappings(CorsRegistry registry) {
 				registry.addMapping("/api/**")
-					.allowedOriginPatterns(origins)
+					.allowedOriginPatterns("*")
 					.allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-					.allowedHeaders("Content-Type")
+					.allowedHeaders("*")
 					.allowCredentials(false)
 					.maxAge(3600);
 			}

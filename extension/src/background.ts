@@ -24,55 +24,231 @@ function sendUpdated(): void {
     })
 }
 
-async function activeVideoTab(): Promise<chrome.tabs.Tab> {
+function formatTimestamp(seconds: number): string {
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor(seconds / 60) % 60
+  const remainingSeconds = seconds % 60
+  const time = `${minutes.toString().padStart(hours > 0 ? 2 : 1, '0')}:${remainingSeconds.toString().padStart(2, '0')}`
+  return hours > 0 ? `${hours}:${time}` : time
+}
+
+function isWithinDomain(hostname: string, domain: string): boolean {
+  return hostname === domain || hostname.endsWith(`.${domain}`)
+}
+
+async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+  if (tab?.id && tab.url && /^https?:\/\//i.test(tab.url)) return tab
+  const [currentWinTab] = await chrome.tabs.query({ active: true, currentWindow: true })
+  if (currentWinTab?.id && currentWinTab.url && /^https?:\/\//i.test(currentWinTab.url)) return currentWinTab
+  const allTabs = await chrome.tabs.query({ active: true })
+  return allTabs.find((t) => t.url && /^https?:\/\//i.test(t.url)) ?? tab ?? currentWinTab
+}
+
+async function activeVideoTab(): Promise<chrome.tabs.Tab> {
+  const tab = await getActiveTab()
   if (!tab?.id || !tab.url || !/^https?:\/\//i.test(tab.url)) {
     throw new Error('Open an http or https course page before starting a learning session.')
   }
   return tab
 }
 
-function originPattern(tab: chrome.tabs.Tab): string {
-  if (!tab.url) throw new Error('The active page address is unavailable.')
-  const url = new URL(tab.url)
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('Video capture is only available on http and https pages.')
+
+async function ensureContentScriptInTab(tabId: number): Promise<void> {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => Boolean((window as unknown as Record<string, unknown>).__aiNotesInjected),
+    }).catch(() => [])
+
+    if (results?.[0]?.result) {
+      return
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['content.js'],
+    })
+  } catch (error) {
+    console.warn('Could not inject content script across all frames:', error)
   }
-  return `${url.origin}/*`
 }
 
 async function connectPage(tab: chrome.tabs.Tab): Promise<void> {
   if (!tab.id) throw new Error('The active browser tab is unavailable.')
-  if (!await chrome.permissions.contains({ origins: [originPattern(tab)] })) {
-    throw new Error('Allow this site when prompted so the extension can read its video player and available captions.')
-  }
+  await ensureContentScriptInTab(tab.id)
+}
+
+function parseCourseTitleFromUrl(rawUrl: string): string | null {
   try {
-    await chrome.tabs.sendMessage(tab.id, { type: 'CONTENT_GET_VIDEO_STATE' } satisfies ExtensionMessage)
-  } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes('Receiving end does not exist')) throw error
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] })
-  }
+    const url = new URL(rawUrl)
+    const referrer = url.searchParams.get('referrer')
+    const targetUrl = referrer ? new URL(referrer) : url
+    const segments = targetUrl.pathname.split('/').filter(Boolean)
+    const courseSlug = segments.find(
+      (s) => s.includes('-') && !/^[0-9a-f-]{15,}$/i.test(s) && !/^[A-Z0-9]{8,}$/i.test(s),
+    )
+    if (courseSlug) {
+      return courseSlug
+        .split('-')
+        .map((word) => {
+          const lower = word.toLowerCase()
+          if (['aws', 'ec2', 'iam', 's3', 'rds', 'vpc', 'api', 'cli', 'sdk', 'sns', 'sqs'].includes(lower)) {
+            return lower.toUpperCase()
+          }
+          return word.charAt(0).toUpperCase() + word.slice(1)
+        })
+        .join(' ')
+    }
+  } catch {}
+  return null
+}
+
+function isDisallowedTitle(text: string): boolean {
+  if (!text || text.length < 3) return true
+  const lower = text.toLowerCase().trim()
+  return (
+    lower === 'untitled video' ||
+    lower === 'course video' ||
+    lower === 'player' ||
+    lower === 'video' ||
+    lower === 'content' ||
+    lower === 'index' ||
+    lower === 'default' ||
+    lower === 'levitate' ||
+    lower === 'levitate learning experience' ||
+    lower.startsWith('levitate learning') ||
+    lower.includes("you're leaving") ||
+    lower.includes('cookie') ||
+    lower.includes('sign in')
+  )
 }
 
 async function readTabVideo(tabId: number): Promise<VideoSnapshot> {
+  await ensureContentScriptInTab(tabId)
+
+  const tab = await chrome.tabs.get(tabId)
+
+  let bestSnapshot: VideoSnapshot | null = null
+
   try {
-    const response = await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_GET_VIDEO_STATE' } satisfies ExtensionMessage) as ExtensionResponse
-    if (!response.success || !response.video) {
-      throw new Error(response.error ?? 'No playable web video was found in this tab.')
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: () => {
+        const reader = (window as unknown as Record<string, unknown>).__aiNotesReadSnapshot
+        if (typeof reader === 'function') {
+          return (reader as (inc?: boolean) => VideoSnapshot | null)(true)
+        }
+        function getAllVideos(root: Document | ShadowRoot | Element = document): HTMLVideoElement[] {
+          const list: HTMLVideoElement[] = []
+          try { list.push(...Array.from(root.querySelectorAll('video'))) } catch {}
+          try {
+            const all = root.querySelectorAll('*')
+            for (let i = 0; i < all.length; i++) {
+              const shadow = all[i].shadowRoot
+              if (shadow) list.push(...getAllVideos(shadow))
+            }
+          } catch {}
+          return list
+        }
+        const vids = getAllVideos()
+        if (vids.length === 0) return null
+        const video = vids.length === 1 ? vids[0] : vids.sort((a, b) => Number(!b.paused) - Number(!a.paused) || (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight))[0]
+        if (!video) return null
+        return {
+          videoId: location.href,
+          videoUrl: location.href,
+          videoTitle: document.title || 'Course Video',
+          timestampSeconds: Math.floor(video.currentTime),
+          durationSeconds: Number.isFinite(video.duration) ? Math.floor(video.duration) : 0,
+          isPlaying: !video.paused && !video.ended,
+          transcriptText: '',
+          platformName: location.hostname.includes('oracle') ? 'Oracle University' : location.hostname.includes('skillbuilder.aws') ? 'AWS Skill Builder' : location.hostname,
+        }
+      },
+    })
+
+    for (const item of results) {
+      const snap = item.result as VideoSnapshot | null
+      if (snap && snap.videoId) {
+        if (!bestSnapshot || (snap.isPlaying && !bestSnapshot.isPlaying) || (snap.durationSeconds > (bestSnapshot?.durationSeconds ?? 0))) {
+          bestSnapshot = snap
+        }
+      }
     }
-    return response.video
   } catch (error) {
-    if (error instanceof Error && error.message.includes('Receiving end does not exist')) {
-      const tab = await chrome.tabs.get(tabId)
-      await connectPage(tab)
-      return readTabVideo(tabId)
-    }
-    throw error
+    console.warn('Script execution for video search failed:', error)
   }
+
+  if (!bestSnapshot) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_GET_VIDEO_STATE' } satisfies ExtensionMessage) as ExtensionResponse
+      if (response?.success && response.video) {
+        bestSnapshot = response.video
+      }
+    } catch {}
+  }
+
+  if (bestSnapshot) {
+    const courseFromUrl = tab.url ? parseCourseTitleFromUrl(tab.url) : null
+    const isGenericTitle = isDisallowedTitle(bestSnapshot.videoTitle)
+
+    if (isGenericTitle && tab.title) {
+      const cleanTabTitle = tab.title
+        .replace(/\s*-\s*YouTube\s*$/i, '')
+        .replace(/\s*-\s*Oracle\s*University\s*$/i, '')
+        .replace(/\s*\|\s*Oracle\s*.*$/i, '')
+        .replace(/\s*-\s*Coursera\s*$/i, '')
+        .trim()
+      if (!isDisallowedTitle(cleanTabTitle)) {
+        bestSnapshot.videoTitle = cleanTabTitle
+      }
+    }
+
+    if (isDisallowedTitle(bestSnapshot.videoTitle) && courseFromUrl) {
+      bestSnapshot.videoTitle = courseFromUrl
+    }
+
+    if (tab.url) {
+      try {
+        const snapUrl = new URL(bestSnapshot.videoUrl)
+        const tabUrl = new URL(tab.url)
+        if (snapUrl.origin !== tabUrl.origin || !bestSnapshot.videoUrl.includes(tabUrl.pathname)) {
+          bestSnapshot.videoUrl = tab.url
+        }
+      } catch {}
+      if (tab.url.includes('oracle')) {
+        bestSnapshot.platformName = 'Oracle University'
+      } else if (tab.url.includes('skillbuilder.aws')) {
+        bestSnapshot.platformName = 'AWS Skill Builder'
+        if (isDisallowedTitle(bestSnapshot.videoTitle) || bestSnapshot.videoTitle.endsWith('.mp4') || /^[0-9a-f-]{15,}/i.test(bestSnapshot.videoTitle)) {
+          bestSnapshot.videoTitle = courseFromUrl || 'AWS Skill Builder Course'
+        }
+      }
+    }
+    return bestSnapshot
+  }
+
+  throw new Error('No playable web video was found in this tab. If the video just loaded, make sure it has started playing.')
 }
 
 async function updateContentSession(tabId: number, session: LearningSession | null): Promise<void> {
-  await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_SET_SESSION', session } satisfies ExtensionMessage)
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: (sess) => {
+        const setter = (window as unknown as Record<string, unknown>).__aiNotesSetSession
+        if (typeof setter === 'function') {
+          setter(sess)
+        }
+      },
+      args: [session],
+    })
+  } catch {}
+
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: 'CONTENT_SET_SESSION', session } satisfies ExtensionMessage)
+  } catch {}
 }
 
 async function ensureOffscreenDocument(): Promise<void> {
@@ -107,7 +283,7 @@ async function activeSession(): Promise<LearningSession | undefined> {
 async function getUiState(): Promise<ExtensionResponse> {
   const [session, tab] = await Promise.all([
     activeSession(),
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([activeTab]) => activeTab),
+    getActiveTab(),
   ])
 
   if (!tab?.id || !tab.url || !/^https?:\/\//i.test(tab.url)) {
@@ -115,13 +291,10 @@ async function getUiState(): Promise<ExtensionResponse> {
   }
 
   try {
-    if (!await chrome.permissions.contains({ origins: [originPattern(tab)] })) {
-      return { success: true, session: session ?? null, video: null }
-    }
     const video = await readTabVideo(tab.id)
     return { success: true, session: session ?? null, video }
-  } catch (error) {
-    return { success: false, error: errorMessage(error), session: session ?? null, video: null }
+  } catch {
+    return { success: true, session: session ?? null, video: null }
   }
 }
 
@@ -132,15 +305,18 @@ async function startSession(
   if (!CAPTURE_INTERVALS.includes(captureIntervalSeconds)) {
     throw new Error('Choose a capture interval of 15, 30, 60, or 120 seconds.')
   }
-  if (await activeSession()) {
-    throw new Error('Finish or pause the current session before starting another video.')
-  }
 
   const tab = await activeVideoTab()
+  const video = await readTabVideo(tab.id!)
+
+  const existing = await activeSession()
+  if (existing) {
+    await updateActiveSession('completed')
+  }
+
   const audioStreamId = captureAudio
     ? await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id })
     : undefined
-  const video = await readTabVideo(tab.id!)
   const session: LearningSession = {
     id: crypto.randomUUID(),
     videoId: video.videoId,
@@ -169,6 +345,13 @@ async function startSession(
     throw error
   }
   sendUpdated()
+
+  try {
+    await takeCapture(tab.id!, video, true)
+  } catch (error) {
+    console.warn('Initial capture could not be taken immediately:', error)
+  }
+
   return { success: true, session, video }
 }
 
@@ -220,21 +403,80 @@ async function seekVideo(sessionId: string, timestampSeconds: number): Promise<E
   if (!session) throw new Error('The learning session could not be found.')
   const video = await readTabVideo(session.tabId)
   if (video.videoId !== session.videoId) {
-    throw new Error('That session’s video is no longer open in its original tab.')
+    let diff = true
+    try {
+      const u1 = new URL(video.videoUrl)
+      const u2 = new URL(session.videoUrl)
+      const h1 = u1.hostname.toLowerCase()
+      const h2 = u2.hostname.toLowerCase()
+      if (h1.includes('skillbuilder') || h2.includes('skillbuilder')) diff = false
+      else if (h1.includes('oracle') || h2.includes('oracle')) diff = false
+      else if (h1.includes('coursera') || h2.includes('coursera')) diff = false
+      else if (u1.origin === u2.origin) diff = false
+    } catch {
+      diff = false
+    }
+    if (diff) {
+      throw new Error('That session’s video is no longer open in its original tab.')
+    }
   }
   await chrome.tabs.update(session.tabId, { active: true })
-  await chrome.tabs.sendMessage(
-    session.tabId,
-    { type: 'SEEK_VIDEO', sessionId, timestampSeconds } satisfies ExtensionMessage,
-  )
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: session.tabId, allFrames: true },
+      func: (time) => {
+        const seeker = (window as unknown as Record<string, unknown>).__aiNotesSeek
+        if (typeof seeker === 'function') {
+          return seeker(time)
+        }
+        return false
+      },
+      args: [timestampSeconds],
+    })
+  } catch {}
+  try {
+    await chrome.tabs.sendMessage(
+      session.tabId,
+      { type: 'SEEK_VIDEO', sessionId, timestampSeconds } satisfies ExtensionMessage,
+    )
+  } catch {}
   return { success: true }
 }
 
 async function processCapture(capture: VideoCapture, session: LearningSession): Promise<void> {
-  if (!capture.transcriptText.trim()) {
+  const cleanTranscript = capture.transcriptText.trim()
+  if (!cleanTranscript) {
     await saveCapture({ ...capture, processingStatus: 'skipped' })
     sendUpdated()
     return
+  }
+
+  try {
+    const existing = await listCaptures(session.id)
+    const completedCaptures = [...existing]
+      .filter((c) => c.id !== capture.id && c.processingStatus === 'completed' && c.transcriptText.trim())
+      .sort((a, b) => b.capturedAt - a.capturedAt)
+    const lastCompleted = completedCaptures[0]
+
+    if (lastCompleted) {
+      // Exact transcript match — definitely a duplicate
+      if (lastCompleted.transcriptText.trim() === cleanTranscript) {
+        await saveCapture({ ...capture, processingStatus: 'skipped' })
+        sendUpdated()
+        return
+      }
+      // Fallback synthetic prompts with very close timestamps mean the same slide is still showing
+      const isSyntheticFallback = cleanTranscript.startsWith('[Visual slide at ') || cleanTranscript.startsWith('Key concepts and technical details') || cleanTranscript.startsWith('Lecture topic and key concepts')
+      const lastIsSyntheticFallback = lastCompleted.transcriptText.trim().startsWith('[Visual slide at ') || lastCompleted.transcriptText.trim().startsWith('Key concepts and technical details') || lastCompleted.transcriptText.trim().startsWith('Lecture topic and key concepts')
+      const timestampDiff = Math.abs(capture.timestampSeconds - lastCompleted.timestampSeconds)
+      if (isSyntheticFallback && lastIsSyntheticFallback && timestampDiff < 30) {
+        await saveCapture({ ...capture, processingStatus: 'skipped' })
+        sendUpdated()
+        return
+      }
+    }
+  } catch (error) {
+    console.warn('Could not check previous captures for deduplication.', error)
   }
 
   await saveCapture({ ...capture, processingStatus: 'processing' })
@@ -242,10 +484,10 @@ async function processCapture(capture: VideoCapture, session: LearningSession): 
 
   try {
     const settings = await chrome.storage.local.get(['aiProvider', 'aiModel'])
-    const provider = typeof settings.aiProvider === 'string' ? settings.aiProvider as AiProvider : 'OPENAI'
+    const provider = typeof settings.aiProvider === 'string' ? settings.aiProvider as AiProvider : 'GEMINI'
     const model = typeof settings.aiModel === 'string' && settings.aiModel.trim()
       ? settings.aiModel.trim()
-      : 'gpt-4.1-mini'
+      : (provider === 'GEMINI' ? 'models/gemini-2.5-flash' : 'gpt-4.1-mini')
     const note = await generateNote({
       provider,
       model,
@@ -253,6 +495,9 @@ async function processCapture(capture: VideoCapture, session: LearningSession): 
       videoUrl: session.videoUrl,
       timestampSeconds: capture.timestampSeconds,
       transcriptText: capture.transcriptText,
+      ...(capture.screenshotDataUrl
+        ? { screenshotBase64: capture.screenshotDataUrl.slice(capture.screenshotDataUrl.indexOf(',') + 1) }
+        : {}),
     })
     await saveNote(toLocalNote(note, session.id, capture.id))
     await saveCapture({ ...capture, processingStatus: 'completed' })
@@ -281,28 +526,122 @@ async function takeCapture(
   }
 
   const video = snapshot ?? await readTabVideo(tabId)
-  if (video.videoId !== session.videoId) {
-    const pausedSession = { ...session, status: 'paused' as const }
-    if (session.captureAudio) await sendAudioMessage({ type: 'AUDIO_PAUSE' })
-    await saveSession(pausedSession)
-    await updateContentSession(tabId, null)
-    sendUpdated()
-    throw new Error('The video changed. This session was paused so captures from different videos are not mixed.')
+
+  // Automatic captures must only run when the video is actively playing
+  if (!allowPaused && !video.isPlaying) {
+    return { success: true }
   }
-  let screenshotDataUrl: string | undefined
+
+  // Strict interval gatekeeper: enforce user's captureIntervalSeconds
+  const existingCaptures = await listCaptures(session.id)
+  if (existingCaptures.length > 0 && !allowPaused) {
+    const lastCapture = existingCaptures.reduce((prev, curr) => (curr.capturedAt > prev.capturedAt ? curr : prev))
+    const timeSinceLastCaptureSec = (Date.now() - lastCapture.capturedAt) / 1000
+    const videoSecondsAdvanced = Math.abs(video.timestampSeconds - lastCapture.timestampSeconds)
+    const minThreshold = Math.max(10, session.captureIntervalSeconds - 4)
+
+    if (timeSinceLastCaptureSec < minThreshold || videoSecondsAdvanced < minThreshold) {
+      return { success: true }
+    }
+  }
+
+  if (video.videoId !== session.videoId) {
+    let trulyDifferent = true
+    try {
+      const u1 = new URL(video.videoUrl)
+      const u2 = new URL(session.videoUrl)
+      const h1 = u1.hostname.toLowerCase()
+      const h2 = u2.hostname.toLowerCase()
+
+      if (h1.includes('skillbuilder') || h2.includes('skillbuilder')) trulyDifferent = false
+      else if (h1.includes('oracle') || h2.includes('oracle')) trulyDifferent = false
+      else if (h1.includes('coursera') || h2.includes('coursera')) trulyDifferent = false
+      else if (isWithinDomain(h1, 'youtube.com') && isWithinDomain(h2, 'youtube.com')) {
+        trulyDifferent = u1.searchParams.get('v') !== u2.searchParams.get('v')
+      } else if (u1.origin === u2.origin) {
+        trulyDifferent = false
+      }
+    } catch {
+      trulyDifferent = false
+    }
+    if (trulyDifferent) {
+      const pausedSession = { ...session, status: 'paused' as const }
+      if (session.captureAudio) await sendAudioMessage({ type: 'AUDIO_PAUSE' })
+      await saveSession(pausedSession)
+      await updateContentSession(tabId, null)
+      sendUpdated()
+      throw new Error('The video changed. This session was paused so captures from different videos are not mixed.')
+    }
+  }
+  let screenshotDataUrl: string | undefined = snapshot?.screenshotDataUrl
   let screenshotError: string | undefined
 
-  try {
-    const [activeTab] = await chrome.tabs.query({ active: true, windowId: (await chrome.tabs.get(tabId)).windowId })
-    if (activeTab?.id !== tabId) {
-      throw new Error('Switch to the video tab to capture its screenshot.')
+  if (!screenshotDataUrl) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        func: () => {
+          const direct = (window as unknown as Record<string, unknown>).__aiNotesCaptureFrame
+          if (typeof direct === 'function') {
+            const frame = (direct as () => string | undefined)()
+            if (frame) return frame
+          }
+          function getAllVideos(root: Document | ShadowRoot | Element = document): HTMLVideoElement[] {
+            const list: HTMLVideoElement[] = []
+            try { list.push(...Array.from(root.querySelectorAll('video'))) } catch {}
+            try {
+              const all = root.querySelectorAll('*')
+              for (let i = 0; i < all.length; i++) {
+                const shadow = all[i].shadowRoot
+                if (shadow) list.push(...getAllVideos(shadow))
+              }
+            } catch {}
+            return list
+          }
+          const vids = getAllVideos()
+          const video = vids.find((v) => !v.paused && v.videoWidth > 0) ?? vids.find((v) => v.videoWidth > 0)
+          if (!video || !video.videoWidth || !video.videoHeight) return null
+          try {
+            const canvas = document.createElement('canvas')
+            const maxDim = 1280
+            const scale = Math.min(1, maxDim / Math.max(video.videoWidth, video.videoHeight))
+            canvas.width = Math.max(1, Math.round(video.videoWidth * scale))
+            canvas.height = Math.max(1, Math.round(video.videoHeight * scale))
+            const ctx = canvas.getContext('2d')
+            if (!ctx) return null
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+            return canvas.toDataURL('image/jpeg', 0.8)
+          } catch {
+            return null
+          }
+        },
+      })
+      for (const item of results) {
+        if (typeof item.result === 'string' && item.result.startsWith('data:image/')) {
+          screenshotDataUrl = item.result
+          break
+        }
+      }
+    } catch (error) {
+      console.warn('Direct canvas frame extraction failed:', error)
     }
-    screenshotDataUrl = await chrome.tabs.captureVisibleTab(activeTab.windowId, {
-      format: 'jpeg',
-      quality: 70,
-    })
-  } catch (error) {
-    screenshotError = errorMessage(error)
+  }
+
+  if (!screenshotDataUrl) {
+    try {
+      const tab = await chrome.tabs.get(tabId)
+      const [activeTab] = await chrome.tabs.query({ active: true, windowId: tab.windowId })
+      if (activeTab?.id === tabId) {
+        screenshotDataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
+          format: 'jpeg',
+          quality: 75,
+        })
+      } else {
+        screenshotError = 'The video tab is in the background and video frame could not be drawn to canvas.'
+      }
+    } catch (error) {
+      screenshotError = errorMessage(error)
+    }
   }
 
   let transcriptText = video.transcriptText
@@ -323,6 +662,13 @@ async function takeCapture(
     }
   }
 
+  if (!transcriptText.trim()) {
+    const formattedTime = formatTimestamp(video.timestampSeconds)
+    transcriptText = screenshotDataUrl
+      ? `[Visual slide at ${formattedTime}] Read and analyze the text, diagrams, bullet points, and code visible on this slide.`
+      : `Key concepts and technical details explained at ${formattedTime} in "${session.videoTitle}".`
+  }
+
   const capture: VideoCapture = {
     id: crypto.randomUUID(),
     sessionId: session.id,
@@ -333,7 +679,7 @@ async function takeCapture(
     ...(screenshotError ? { screenshotError } : {}),
     ...(audioBase64 && transcriptionError ? { audioBase64 } : {}),
     ...(transcriptionError ? { processingError: transcriptionError } : {}),
-    processingStatus: transcriptText.trim() ? 'pending' : transcriptionError ? 'failed' : 'skipped',
+    processingStatus: 'pending',
   }
 
   await saveCapture(capture)
@@ -403,6 +749,17 @@ async function handleMessage(
       return updateActiveSession('completed')
     case 'SET_CAPTURE_INTERVAL':
       return updateCaptureInterval(message.captureIntervalSeconds)
+    case 'SET_PROVIDER_PREFERENCES': {
+      const model = message.model.trim()
+      if (!model) throw new Error('Enter a model ID before saving.')
+      await chrome.storage.local.set({ aiProvider: message.provider, aiModel: model })
+      const saved = await chrome.storage.local.get(['aiProvider', 'aiModel'])
+      if (saved.aiProvider !== message.provider || saved.aiModel !== model) {
+        throw new Error('The model preference could not be saved.')
+      }
+      sendUpdated()
+      return { success: true }
+    }
     case 'SEEK_VIDEO':
       return seekVideo(message.sessionId, message.timestampSeconds)
     case 'CAPTURE_NOW': {
@@ -418,6 +775,29 @@ async function handleMessage(
     case 'CONTENT_VIDEO_CHANGED':
       if (!sender.tab?.id) throw new Error('The video change did not come from a video tab.')
       return pauseSessionForVideoChange(sender.tab.id)
+    case 'BACKEND_FETCH': {
+      const { path, init } = message
+      const urls = ['http://127.0.0.1:8080', 'http://localhost:8080']
+      let lastErr: unknown
+      for (const baseUrl of urls) {
+        try {
+          const res = await fetch(`${baseUrl}${path}`, init ? {
+            method: init.method,
+            headers: init.headers,
+            body: init.body,
+          } : undefined)
+          if (!res.ok) {
+            return { success: false, error: `The notes service returned HTTP ${res.status}.` }
+          }
+          if (res.status === 204) return { success: true, data: undefined }
+          const data = await res.json()
+          return { success: true, data }
+        } catch (e) {
+          lastErr = e
+        }
+      }
+      return { success: false, error: errorMessage(lastErr) }
+    }
     default:
       throw new Error('This extension message is not supported here.')
   }
@@ -462,3 +842,40 @@ chrome.runtime.onStartup.addListener(() => {
     })
   })
 })
+
+let sessionTicker: ReturnType<typeof setInterval> | null = null
+
+function ensureSessionTicker() {
+  if (sessionTicker !== null) return
+  sessionTicker = setInterval(() => {
+    void (async () => {
+      try {
+        const session = await activeSession()
+        if (!session || session.status !== 'active') return
+
+        const video = await readTabVideo(session.tabId).catch(() => null)
+        if (!video || !video.isPlaying) return
+
+        const existingCaptures = await listCaptures(session.id)
+        if (existingCaptures.length === 0) {
+          await takeCapture(session.tabId, video, true)
+          return
+        }
+
+        const lastCapture = existingCaptures.reduce((prev, curr) => (curr.capturedAt > prev.capturedAt ? curr : prev))
+        const timeSinceSec = (Date.now() - lastCapture.capturedAt) / 1000
+        const videoAdvanceSec = Math.abs(video.timestampSeconds - lastCapture.timestampSeconds)
+        const threshold = Math.max(10, session.captureIntervalSeconds - 2)
+
+        if (timeSinceSec >= threshold && videoAdvanceSec >= threshold) {
+          await takeCapture(session.tabId, video, false)
+        }
+      } catch (err) {
+        console.warn('Session ticker error:', err)
+      }
+    })()
+  }, 3000)
+}
+
+ensureSessionTicker()
+

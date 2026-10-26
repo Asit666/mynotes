@@ -10,8 +10,11 @@ const manifest: ManifestV3Export = {
   optional_permissions: ['offscreen', 'tabCapture'],
   host_permissions: [
     'http://127.0.0.1:8080/*',
+    'http://localhost:8080/*',
+    'http://127.0.0.1/*',
+    'http://localhost/*',
+    '<all_urls>',
   ],
-  optional_host_permissions: ['http://*/*', 'https://*/*'],
   action: {
     default_title: 'AI Video Notes',
     default_popup: 'index.html',

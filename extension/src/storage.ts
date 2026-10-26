@@ -84,3 +84,38 @@ export async function listNotes(sessionId: string): Promise<GeneratedNote[]> {
   )
   return notes.sort((left, right) => left.startTimestampSeconds - right.startTimestampSeconds)
 }
+
+export function deleteNote(id: string): Promise<void> {
+  return requestFromStore('notes', 'readwrite', (store) => store.delete(id))
+}
+
+export function deleteCapture(id: string): Promise<void> {
+  return requestFromStore('captures', 'readwrite', (store) => store.delete(id))
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const database = await openDatabase()
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(['sessions', 'captures', 'notes'], 'readwrite')
+    transaction.objectStore('sessions').delete(sessionId)
+
+    const captureIndex = transaction.objectStore('captures').index('sessionId')
+    const captureReq = captureIndex.getAllKeys(sessionId)
+    captureReq.onsuccess = () => {
+      for (const key of captureReq.result) {
+        transaction.objectStore('captures').delete(key)
+      }
+    }
+
+    const noteIndex = transaction.objectStore('notes').index('sessionId')
+    const noteReq = noteIndex.getAllKeys(sessionId)
+    noteReq.onsuccess = () => {
+      for (const key of noteReq.result) {
+        transaction.objectStore('notes').delete(key)
+      }
+    }
+
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () => reject(transaction.error ?? new Error('Could not delete session.'))
+  })
+}

@@ -18,8 +18,15 @@ export async function connectCurrentPage(): Promise<ExtensionResponse> {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('Open a video on an http or https page to connect it.')
   }
-  const granted = await chrome.permissions.request({ origins: [`${url.origin}/*`] })
-  if (!granted) throw new Error('Site access was not granted. Allow access to this page to connect its video.')
+  try {
+    const hasOrigin = await chrome.permissions.contains({ origins: [`${url.origin}/*`] })
+    if (!hasOrigin) {
+      const granted = await chrome.permissions.request({ origins: [`${url.origin}/*`] })
+      if (!granted) throw new Error('Site access was not granted. Allow access to this page to connect its video.')
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Site access was not granted')) throw error
+  }
 
   return sendExtensionMessage({ type: 'PAGE_CONNECT' })
 }

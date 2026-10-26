@@ -72,13 +72,13 @@ class NoteGenerationServiceTests {
 		when(credentials.get(AiProvider.GEMINI)).thenReturn("test-api-key");
 		var service = new NoteGenerationService(builder, JsonMapper.builder().build(), credentials);
 
-		server.expect(requestTo("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"))
+		server.expect(requestTo("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"))
 			.andExpect(header("x-goog-api-key", "test-api-key"))
 			.andRespond(withSuccess("""
 				{"candidates":[{"content":{"parts":[{"text":"{\\"title\\":\\"JIT\\",\\"explanation\\":\\"Runtime compilation\\",\\"keyPoints\\":[]}"}]}}]}
 				""", MediaType.APPLICATION_JSON));
 
-		assertThat(service.generate(request("GEMINI", "models/gemini-2.5-flash")).title()).isEqualTo("JIT");
+		assertThat(service.generate(request("GEMINI", "models/gemini-3.5-flash")).title()).isEqualTo("JIT");
 		server.verify();
 	}
 
@@ -144,12 +144,15 @@ class NoteGenerationServiceTests {
 		server.expect(requestTo("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000"))
 			.andRespond(withSuccess("""
 				{"models":[
-				  {"name":"models/gemini-flash","supportedGenerationMethods":["generateContent"]},
-				  {"name":"models/embedding","supportedGenerationMethods":["embedContent"]}
+				  {"name":"models/gemini-2.5-pro","supportedGenerationMethods":["generateContent"]},
+				  {"name":"models/gemini-2.5-flash-preview-tts","supportedGenerationMethods":["generateContent"]},
+				  {"name":"models/gemini-2.5-flash","supportedGenerationMethods":["generateContent"]},
+				  {"name":"models/gemini-embedding","supportedGenerationMethods":["embedContent"]}
 				]}
 				""", MediaType.APPLICATION_JSON));
 
-		assertThat(service.listModels(AiProvider.GEMINI)).containsExactly("models/gemini-flash");
+		assertThat(service.listModels(AiProvider.GEMINI))
+			.containsExactly("models/gemini-2.5-flash", "models/gemini-2.5-pro");
 		server.verify();
 	}
 

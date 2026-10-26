@@ -60,14 +60,18 @@ when available.
 Open the side-panel **Settings**:
 
 1. Choose **OpenAI**, **Anthropic Claude**, or **Google Gemini**.
-2. Enter that provider's API key and save it. The key is sent only to the
-   loopback API and stored in Windows Credential Manager.
-3. Select **Load available models** to retrieve models available to your
-   account. The model field also accepts a model ID manually.
+2. Enter that provider's API key and save it. The local API validates the key
+   by loading models available to that account before saving it in Windows
+   Credential Manager. An invalid key is not saved.
+3. A compatible model is selected automatically after validation. The model
+   field also accepts a model ID manually or uses **Load available models** to
+   refresh the list.
 
 Keys are provider-account credentials, not MCP credentials. Do not put them in
 source files, the extension, or chat messages. The extension sends note
 generation requests to the local API; the API contacts the selected provider.
+MCP is a separate tool-server protocol and requires a configured MCP endpoint;
+it cannot validate or replace provider API keys.
 
 ## Optional audio transcription
 
