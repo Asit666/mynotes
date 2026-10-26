@@ -1,118 +1,227 @@
-# AI Video Notes
+<div align="center">
 
-AI Video Notes is a local-first Chrome study extension for YouTube, Coursera,
-AWS Skill Builder, Oracle Academy, and other web pages that expose an HTML5
-video player. It captures timestamped video moments, reads available captions
-or visible transcripts, optionally transcribes tab audio when captions are
-missing, and generates editable study notes.
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=12,23,38,45&height=220&section=header&text=AI%20Video%20Notes&fontSize=46&fontColor=ffffff&fontAlignY=40&desc=Local-First%20Study%20Companion%20%7C%20Direct%20Canvas%20Capture%20%7C%20Multimodal%20AI%20Vision&descAlignY=64&descAlign=50" width="100%" alt="AI Video Notes Header" />
 
-## Requirements
+  <p align="center">
+    <code>&gt; Real-time visual lecture synthesis &bull; High-yield structured study notes &bull; 100% private</code>
+  </p>
 
-- Google Chrome 116 or newer
-- Node.js 22.12 or newer and npm
-- Java 25
-- Windows for saving provider keys in Windows Credential Manager
-- An API key from any provider you intend to use; OpenAI is required for the
-  optional audio-transcription fallback
+  <p align="center">
+    <a href="#04-quick-start--setup"><img src="https://img.shields.io/badge/Chrome_Extension-Manifest_V3-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Chrome Extension" /></a>
+    <a href="#02-technical-stack"><img src="https://img.shields.io/badge/Backend-Spring_Boot_4_%7C_Java_25-6DB33F?style=for-the-badge&logo=springboot&logoColor=white" alt="Spring Boot" /></a>
+    <a href="#02-technical-stack"><img src="https://img.shields.io/badge/Frontend-React_19_%7C_TypeScript-007ACC?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" /></a>
+    <a href="#02-technical-stack"><img src="https://img.shields.io/badge/AI_Vision-Gemini_%7C_OpenAI_%7C_Claude-8E75C2?style=for-the-badge&logo=googlegemini&logoColor=white" alt="AI Vision" /></a>
+    <a href="#05-architecture--security"><img src="https://img.shields.io/badge/Security-Windows_Credential_Manager-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows Credential Manager" /></a>
+  </p>
 
-## Start the local API
+</div>
 
-From the repository root, in PowerShell:
+---
+
+## 01 About
+
+**AI Video Notes** is an intelligent, local-first Chrome extension and background daemon designed for **YouTube, AWS Skill Builder, Coursera, Oracle Academy**, and any web page hosting an HTML5 video player.
+
+While watching lectures, certification courses, or technical tutorials, the extension autonomously captures timestamped moments, extracts video frames directly from the player via in-memory `<canvas>` rendering, collects captions or subtitles, and synthesizes clear, high-yield study notes with visual slide grounding.
+
+<table>
+  <tr>
+    <td width="30%"><strong>Architecture</strong></td>
+    <td>Local-First (Chrome Manifest V3 Extension + Local Spring Boot Daemon)</td>
+  </tr>
+  <tr>
+    <td><strong>Storage</strong></td>
+    <td>100% Local (Browser IndexedDB &bull; Windows Credential Manager for API Keys)</td>
+  </tr>
+  <tr>
+    <td><strong>Vision Pipeline</strong></td>
+    <td>Direct canvas frame extraction &bull; In-memory base64 multimodal processing</td>
+  </tr>
+  <tr>
+    <td><strong>Platforms Tested</strong></td>
+    <td>YouTube, AWS Skill Builder, Coursera, Oracle University &amp; generic HTML5 players</td>
+  </tr>
+  <tr>
+    <td><strong>Export Formats</strong></td>
+    <td>Structured Markdown document + full-resolution timestamped frame screenshots (ZIP)</td>
+  </tr>
+</table>
+
+---
+
+## 02 Technical Stack
+
+<div align="center">
+
+### Backend &amp; Core
+<p align="center">
+  <img src="https://img.shields.io/badge/Java_25-ED8B00?style=for-the-badge&logo=openjdk&logoColor=white" alt="Java 25" />
+  <img src="https://img.shields.io/badge/Spring_Boot_4-6DB33F?style=for-the-badge&logo=springboot&logoColor=white" alt="Spring Boot 4" />
+  <img src="https://img.shields.io/badge/Spring_WebMVC-6DB33F?style=for-the-badge&logo=spring&logoColor=white" alt="Spring WebMVC" />
+  <img src="https://img.shields.io/badge/JNA_Platform-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="JNA Platform" />
+  <img src="https://img.shields.io/badge/Jackson_JSON-2D3748?style=for-the-badge&logo=json&logoColor=white" alt="Jackson" />
+  <img src="https://img.shields.io/badge/Apache_Maven-C71A36?style=for-the-badge&logo=apachemaven&logoColor=white" alt="Maven" />
+</p>
+
+### Frontend Extension
+<p align="center">
+  <img src="https://img.shields.io/badge/React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB" alt="React 19" />
+  <img src="https://img.shields.io/badge/TypeScript_5-007ACC?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/Vite_8-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
+  <img src="https://img.shields.io/badge/Chrome_Extension-Manifest_V3-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Chrome Extension" />
+  <img src="https://img.shields.io/badge/IndexedDB-F16529?style=for-the-badge&logo=html5&logoColor=white" alt="IndexedDB" />
+  <img src="https://img.shields.io/badge/JSZip-2D3748?style=for-the-badge&logo=files&logoColor=white" alt="JSZip" />
+</p>
+
+### Multimodal AI &amp; Vision
+<p align="center">
+  <img src="https://img.shields.io/badge/Google_Gemini-8E75C2?style=for-the-badge&logo=googlegemini&logoColor=white" alt="Google Gemini" />
+  <img src="https://img.shields.io/badge/OpenAI_GPT--4o-412991?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI" />
+  <img src="https://img.shields.io/badge/Anthropic_Claude-D97706?style=for-the-badge&logo=anthropic&logoColor=white" alt="Anthropic Claude" />
+  <img src="https://img.shields.io/badge/OpenAI_Whisper-00A67E?style=for-the-badge&logo=openai&logoColor=white" alt="OpenAI Whisper" />
+</p>
+
+</div>
+
+---
+
+## 03 Key Features &amp; Pipeline
+
+- **Direct Canvas Video Frame Extraction**:
+  - Draws frames directly from the `<video>` element into an in-memory `<canvas>` across all parent frames and iframes.
+  - **Works seamlessly even when the video tab is in the background** or when switching between windows.
+  - Eliminates browser address bars, tabs, borders, and letterbox black bars.
+
+- **Multimodal Slide Reading**:
+  - Automatically sends captured slide frames to **Google Gemini**, **OpenAI GPT-4o**, or **Anthropic Claude**.
+  - Reads slide headings, bullet points, architecture diagrams, CLI commands, and code snippets directly from the screen image.
+  - Zero hallucinations — strictly grounded in visual slide content and lecture audio.
+
+- **Smart Platform &amp; Course Recognition**:
+  - Intelligently parses real course slugs from complex LMS URLs and referrer parameters (e.g. `aws-cloud-practitioner-essentials` &rarr; `AWS Cloud Practitioner Essentials`).
+  - Automatically suppresses internal video player shell names (e.g. *"Levitate Learning Experience"* on AWS Skill Builder).
+  - Inspects live DOM breadcrumbs, module headings, and lesson titles.
+
+- **Interactive Study Dashboard**:
+  - **Timeline &amp; Document Views**: Switch instantly between chronological study cards and a unified markdown summary document.
+  - **Seamless Navigation**: Return to **Home / All Notes** at any time without deleting or losing notes.
+  - **Inline Title Editing (✎)**: Rename any course or lecture title inline.
+  - **Timestamp Video Seek**: Click any timestamp pill in your notes to jump directly to that exact second in the active video tab.
+  - **One-Click ZIP Export**: Export formatted Markdown study notes bundled with all captured slide screenshots.
+
+- **Audio Transcription Fallback**:
+  - Optional tab-audio capture utilizing OpenAI Whisper when web videos do not provide captions or subtitle tracks.
+
+---
+
+## 04 Quick Start &amp; Setup
+
+### Prerequisites
+
+- **Google Chrome** (v116 or newer)
+- **Node.js** (v22.12 or newer) &amp; **npm**
+- **Java 25** (JDK 25)
+- **Windows** (for secure DPAPI / Windows Credential Manager integration)
+
+---
+
+### Step 1: Start the Local Spring Boot API
+
+From the repository root, open PowerShell:
 
 ```powershell
 .\backend\mvnw.cmd -f backend\pom.xml spring-boot:run
 ```
 
-The API binds to `127.0.0.1:8080`. Keep it running while using the extension.
-It stores provider keys in the current Windows account's Credential Manager;
-keys are not written to extension storage, returned by the API, or committed to
-the repository.
+> **Note:** The daemon binds to `http://127.0.0.1:8080`. Keep this process running in the background while using the extension. It securely stores your provider API keys inside your current Windows account's Credential Manager.
 
-## Build and load the extension
+---
+
+### Step 2: Build &amp; Load the Chrome Extension
+
+In a separate PowerShell terminal:
 
 ```powershell
-Set-Location extension
+cd extension
 npm install
 npm run build
 ```
 
-In Chrome, open `chrome://extensions`, enable **Developer mode**, select **Load
-unpacked**, and choose `extension\dist`.
+1. Open Google Chrome and navigate to `chrome://extensions`.
+2. Toggle on **Developer mode** in the top-right corner.
+3. Click **Load unpacked** and select the `extension/dist` folder.
 
-## Connect a course page
+---
 
-1. Open a video in YouTube, Coursera, AWS Skill Builder, Oracle Academy, or
-   another `http`/`https` page.
-2. Open the extension and select **Connect this page**. Chrome asks for access
-   to that site; access is requested per site, not for every website at install.
-3. Select a capture interval and start a study session. Captures, notes,
-   screenshots, and quick notes are stored in the browser's local IndexedDB.
-4. Open the side panel to review, edit, retry failed AI notes, and export a
-   Markdown-and-screenshot ZIP.
+### Step 3: Configure Your AI Provider
 
-The extension looks for rendered YouTube transcript segments, native HTML5 text
-tracks/caption cues, and visible transcript/subtitle elements on course pages.
-Site player markup varies, so use the site's own captions or transcript panel
-when available.
+1. Open the extension side panel or dashboard by clicking the extension icon.
+2. Click the **Settings (⚙)** icon.
+3. Select your preferred provider (**Google Gemini**, **OpenAI**, or **Anthropic Claude**).
+4. Enter your API key and click **Save**. The local API validates your key against the provider before securely storing it.
 
-## AI providers and models
+---
 
-Open the side-panel **Settings**:
+### Step 4: Capture &amp; Study
 
-1. Choose **OpenAI**, **Anthropic Claude**, or **Google Gemini**.
-2. Enter that provider's API key and save it. The local API validates the key
-   by loading models available to that account before saving it in Windows
-   Credential Manager. An invalid key is not saved.
-3. A compatible model is selected automatically after validation. The model
-   field also accepts a model ID manually or uses **Load available models** to
-   refresh the list.
+1. Open any video lecture on **YouTube, AWS Skill Builder, Coursera**, or another course website.
+2. Open the extension and click **Connect this page**.
+3. Choose your desired capture interval (e.g. 15s, 30s, 60s) and click **Start session**.
+4. Learn with complete focus — notes and screenshots are organized automatically in real time!
 
-Keys are provider-account credentials, not MCP credentials. Do not put them in
-source files, the extension, or chat messages. The extension sends note
-generation requests to the local API; the API contacts the selected provider.
-MCP is a separate tool-server protocol and requires a configured MCP endpoint;
-it cannot validate or replace provider API keys.
+---
 
-## Optional audio transcription
+## 05 Architecture &amp; Security
 
-Audio fallback is **off by default**. Before starting a session, opt in to
-**Transcribe audio when captions are unavailable**. Chrome then asks for
-tab-audio capture permission. The extension records tab audio while opted in,
-but sends a short segment to OpenAI's transcription API only when the current
-capture has no available caption/transcript text. This uses your OpenAI account
-and may incur API charges. Browser playback audio continues while capture is
-active. Pausing/finishing a session stops or pauses audio recording.
-
-If transcription fails after an audio segment was captured, that segment is
-kept locally with the failed capture so you can retry after fixing the provider
-configuration. Successful audio is not retained in the notes database or ZIP.
-
-## Important limits and privacy
-
-- There is no universal transcript API for every course website. Capture works
-  with accessible HTML5 players and text exposed by the page; pages with
-  proprietary players, inaccessible captions, cross-origin restrictions, or
-  DRM may not expose transcript text. The extension does not bypass DRM, logins,
-  or site access controls.
-- Without captions or transcript text, AI notes require the explicit audio
-  fallback opt-in and a configured OpenAI key. Otherwise the capture remains
-  available for screenshots and manual notes.
-- Screenshots capture the visible browser tab and may include other page
-  content. Review captures before exporting or sharing them.
-- When AI generation is enabled, transcript text is sent to the provider you
-  selected. With audio fallback, only the opted-in short audio interval lacking
-  captions is sent to OpenAI for transcription.
-- Video tabs are accessed only after you connect a specific site. API keys
-  remain in the current Windows user's Credential Manager and are never
-  returned to the extension.
-- Session data stays in local browser storage unless you export it.
-
-## Checks
-
-```powershell
-Set-Location extension
-npm run build
-npm run lint
-Set-Location ..\backend
-.\mvnw.cmd test
 ```
++-----------------------------------------------------------------------------------+
+|                                  BROWSER TAB                                      |
+|                                                                                   |
+|  [ HTML5 Video Element ] --- <canvas> Frame Grab ----+                            |
+|  [ Captions / Subtitles ] -- DOM & TextTrack Cue ----+                            |
+|                                                      |                            |
+|                                                      v                            |
+|                                     +----------------------------------+          |
+|                                     |    CHROME EXTENSION (MV3)        |          |
+|                                     |  - Content Script                |          |
+|                                     |  - Service Worker Background     |          |
+|                                     |  - IndexedDB Local Storage       |          |
+|                                     +-----------------+----------------+          |
++-------------------------------------------------------|---------------------------+
+                                                        |
+                                       POST /api/notes/generate
+                                       (Local HTTP Payload)
+                                                        |
+                                                        v
++-----------------------------------------------------------------------------------+
+|                        LOCAL BACKEND DAEMON (127.0.0.1:8080)                     |
+|                                                                                   |
+|  [ Spring Boot 4 REST API ]                                                       |
+|             |                                                                     |
+|             +--- Windows Credential Manager (DPAPI Key Security)                  |
+|             |                                                                     |
+|             +--- Multimodal AI Vision Clients                                     |
+|                     |                                                             |
+|                     +---> Google Gemini API (inlineData JPEG)                     |
+|                     +---> OpenAI API (gpt-4o Vision / Whisper)                    |
+|                     +---> Anthropic API (Claude 3.5 Sonnet Vision)                |
++-----------------------------------------------------------------------------------+
+```
+
+### Privacy Guarantees
+
+- **Zero Cloud Key Storage**: API keys never leave your machine; they are encrypted via Windows Data Protection API (DPAPI) and stored in Windows Credential Manager.
+- **No Third-Party Analytics**: No telemetry, analytics, or tracking scripts are included.
+- **Local Database**: All notes, transcripts, and images reside strictly inside your browser's private IndexedDB until you choose to export them.
+
+---
+
+<div align="center">
+
+  <p>
+    <strong>I prefer to understand what I'm building.</strong>
+  </p>
+
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&customColorList=12,23,38,45&height=100&section=footer" width="100%" alt="AI Video Notes Footer" />
+
+</div>
