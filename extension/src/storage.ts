@@ -1,4 +1,4 @@
-import type { GeneratedNote, LearningSession, VideoCapture } from './models'
+import type { GeneratedNote, LearningSession, NoteGroup, VideoCapture } from './models'
 
 const DATABASE_NAME = 'ai-video-notes'
 const DATABASE_VERSION = 1
@@ -118,4 +118,47 @@ export async function deleteSession(sessionId: string): Promise<void> {
     transaction.oncomplete = () => resolve()
     transaction.onerror = () => reject(transaction.error ?? new Error('Could not delete session.'))
   })
+}
+
+export async function listGroups(): Promise<NoteGroup[]> {
+  try {
+    const result = await chrome.storage.local.get('note_groups')
+    if (Array.isArray(result.note_groups)) {
+      return result.note_groups as NoteGroup[]
+    }
+  } catch {
+    // fallback
+  }
+  const defaultGroups: NoteGroup[] = [
+    { id: 'g1', name: 'AWS', createdAt: 1700000000000 },
+    { id: 'g2', name: 'Programming', createdAt: 1700000001000 },
+  ]
+  try {
+    await chrome.storage.local.set({ note_groups: defaultGroups })
+  } catch {}
+  return defaultGroups
+}
+
+export async function saveGroup(group: NoteGroup): Promise<void> {
+  const groups = await listGroups()
+  const index = groups.findIndex((g) => g.id === group.id)
+  if (index >= 0) {
+    groups[index] = group
+  } else {
+    groups.push(group)
+  }
+  await chrome.storage.local.set({ note_groups: groups })
+}
+
+export async function deleteGroup(id: string): Promise<void> {
+  const groups = await listGroups()
+  const next = groups.filter((g) => g.id !== id)
+  await chrome.storage.local.set({ note_groups: next })
+  const sessions = await listSessions()
+  for (const s of sessions) {
+    if (s.groupId === id) {
+      s.groupId = null
+      await saveSession(s)
+    }
+  }
 }

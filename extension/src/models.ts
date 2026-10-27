@@ -2,6 +2,12 @@ export type SessionStatus = 'active' | 'paused' | 'completed'
 export type ProcessingStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'skipped'
 export type AiProvider = 'OPENAI' | 'ANTHROPIC' | 'GEMINI'
 
+export interface NoteGroup {
+  id: string
+  name: string
+  createdAt: number
+}
+
 export interface LearningSession {
   id: string
   videoId: string
@@ -14,6 +20,10 @@ export interface LearningSession {
   captureIntervalSeconds: number
   captureAudio?: boolean
   status: SessionStatus
+  summary?: string
+  summaryGeneratedAt?: number
+  summaryNoteCount?: number
+  groupId?: string | null
 }
 
 export interface VideoSnapshot {
@@ -26,6 +36,7 @@ export interface VideoSnapshot {
   transcriptText: string
   platformName: string
   screenshotDataUrl?: string
+  isAd?: boolean
 }
 
 export interface VideoCapture {
@@ -62,11 +73,12 @@ export type ExtensionMessage =
   | { type: 'AUDIO_PAUSE' }
   | { type: 'AUDIO_RESUME' }
   | { type: 'AUDIO_STOP' }
-  | { type: 'SESSION_START'; captureIntervalSeconds: number; captureAudio?: boolean }
+  | { type: 'SESSION_START'; captureIntervalSeconds: number; captureAudio?: boolean; groupId?: string | null }
   | { type: 'SESSION_PAUSE' }
   | { type: 'SESSION_RESUME' }
   | { type: 'SESSION_STOP' }
-  | { type: 'CAPTURE_NOW' }
+  | { type: 'SESSION_REOPEN'; sessionId: string }
+  | { type: 'CAPTURE_NOW'; sessionId?: string }
   | { type: 'CAPTURE_RETRY'; captureId: string }
   | { type: 'SET_CAPTURE_INTERVAL'; captureIntervalSeconds: number }
   | { type: 'SET_PROVIDER_PREFERENCES'; provider: AiProvider; model: string }

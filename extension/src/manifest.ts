@@ -26,6 +26,14 @@ const manifest: ManifestV3Export = {
   side_panel: {
     default_path: 'sidepanel.html',
   },
+  content_scripts: [
+    {
+      matches: ['http://*/*', 'https://*/*'],
+      js: ['src/content.ts'],
+      all_frames: true,
+      run_at: 'document_idle',
+    },
+  ],
 }
 
 export default manifest

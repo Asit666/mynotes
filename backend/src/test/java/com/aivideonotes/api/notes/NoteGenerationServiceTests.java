@@ -156,6 +156,77 @@ class NoteGenerationServiceTests {
 		server.verify();
 	}
 
+	@Test
+	void generatesCourseSummaryFromFullNotes() {
+		var builder = RestClient.builder();
+		var server = MockRestServiceServer.bindTo(builder).build();
+		var credentials = mock(ProviderCredentialStore.class);
+		when(credentials.get(AiProvider.OPENAI)).thenReturn("test-api-key");
+		var service = new NoteGenerationService(builder, JsonMapper.builder().build(), credentials);
+
+		server.expect(requestTo("https://api.openai.com/v1/chat/completions"))
+			.andExpect(header("Authorization", "Bearer test-api-key"))
+			.andRespond(withSuccess("""
+				{
+				  "choices": [{
+				    "message": {
+				      "content": "{\\"title\\":\\"EC2 Architecture\\",\\"executiveSummary\\":\\"EC2 provides scalable compute.\\",\\"coreThemes\\":[\\"Virtualization\\"],\\"keyTakeaways\\":[\\"Pay for what you use\\"],\\"reviewQuestions\\":[\\"What is an instance?\\"]}"
+				    }
+				  }]
+				}
+				""", MediaType.APPLICATION_JSON));
+
+		var summary = service.generateSummary(new GenerateSummaryRequest(
+			"OPENAI",
+			"gpt-4.1-mini",
+			"Amazon EC2",
+			"https://skillbuilder.aws/example",
+			"## [0:00] Intro\nEC2 intro text\n\n## [1:00] Hypervisor\nHypervisor isolation"));
+
+		assertThat(summary.title()).isEqualTo("EC2 Architecture");
+		assertThat(summary.executiveSummary()).isEqualTo("EC2 provides scalable compute.");
+		assertThat(summary.coreThemes()).containsExactly("Virtualization");
+		assertThat(summary.keyTakeaways()).containsExactly("Pay for what you use");
+		assertThat(summary.formattedMarkdown()).contains("## Executive Summary");
+		server.verify();
+	}
+
+	@Test
+	void answersUserQuestionAndGeneratesSupplementNoteThroughOpenAi() {
+		var builder = RestClient.builder();
+		var server = MockRestServiceServer.bindTo(builder).build();
+		var credentials = mock(ProviderCredentialStore.class);
+		when(credentials.get(AiProvider.OPENAI)).thenReturn("test-api-key");
+		var service = new NoteGenerationService(builder, JsonMapper.builder().build(), credentials);
+
+		server.expect(requestTo("https://api.openai.com/v1/chat/completions"))
+			.andExpect(header("Authorization", "Bearer test-api-key"))
+			.andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+			.andRespond(withSuccess("""
+				{
+				  "choices": [{
+				    "message": {
+				      "content": "{\\"title\\":\\"Thread Comparison: Java vs Go\\",\\"explanation\\":\\"Java uses kernel threads and virtual threads, whereas Go uses goroutines scheduled via M:N runtime.\\",\\"keyPoints\\":[\\"Goroutines start at 2KB stack.\\",\\"Java Virtual Threads mount on carrier threads.\\"]}"
+				    }
+				  }]
+				}
+				""", MediaType.APPLICATION_JSON));
+
+		var note = service.askNote(new AskNoteRequest(
+			"OPENAI",
+			"gpt-4.1-mini",
+			"Concurrency Course",
+			"https://youtube.com/watch?v=123",
+			"Compare Java and Go thread system",
+			"Existing notes about threads",
+			120L));
+
+		assertThat(note.title()).isEqualTo("Thread Comparison: Java vs Go");
+		assertThat(note.startTimestampSeconds()).isEqualTo(120L);
+		assertThat(note.keyPoints()).hasSize(2);
+		server.verify();
+	}
+
 	private GenerateNoteRequest request(String provider, String model) {
 		return new GenerateNoteRequest(
 			provider,

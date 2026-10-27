@@ -1,5 +1,4 @@
 import type { GeneratedNote } from './models'
-import { sendExtensionMessage } from './chrome'
 
 export type AiProvider = 'OPENAI' | 'ANTHROPIC' | 'GEMINI'
 
@@ -9,7 +8,7 @@ export interface ProviderStatus {
   configured: boolean
 }
 
-interface GenerateNoteRequest {
+export interface GenerateNoteRequest {
   provider: AiProvider
   model: string
   videoTitle: string
@@ -19,11 +18,39 @@ interface GenerateNoteRequest {
   screenshotBase64?: string
 }
 
-interface GeneratedNoteResponse {
+export interface GeneratedNoteResponse {
   title: string
   explanation: string
   keyPoints: string[]
   startTimestampSeconds: number
+}
+
+export interface GenerateSummaryRequest {
+  provider: AiProvider
+  model: string
+  videoTitle: string
+  videoUrl: string
+  fullNotesMarkdown: string
+}
+
+export interface GeneratedSummaryResponse {
+  title: string
+  executiveSummary: string
+  coreThemes: string[]
+  keyTakeaways: string[]
+  reviewQuestions: string[]
+  formattedMarkdown: string
+  generatedAt: string
+}
+
+export interface AskNoteRequest {
+  provider: AiProvider
+  model: string
+  videoTitle: string
+  videoUrl?: string
+  prompt: string
+  existingNotesContext?: string
+  timestampSeconds?: number
 }
 
 interface ProviderValidation {
@@ -45,41 +72,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         let detail = `The notes service returned HTTP ${response.status}.`
         try {
           const error = await response.json() as { message?: unknown }
-          if (typeof error.message === 'string' && error.message.length > 0) detail = error.message
-        } catch (error) {
-          if (!(error instanceof SyntaxError)) throw error
+          if (typeof error.message === 'string' && error.message.length > 0) {
+            detail = error.message
+          }
+        } catch {
+          // Response body was not JSON
         }
-        throw new Error(detail)
+        const serverError = new Error(detail)
+        ;(serverError as unknown as { isServerError: boolean }).isServerError = true
+        throw serverError
       }
       if (response.status === 204) return undefined as T
       return await response.json() as T
     } catch (error) {
       lastError = error
-      if (error instanceof Error && error.message.includes('The notes service returned HTTP')) {
+      if (error && typeof error === 'object' && 'isServerError' in error) {
         throw error
       }
-    }
-  }
-
-  try {
-    const bgResponse = await sendExtensionMessage({
-      type: 'BACKEND_FETCH',
-      path,
-      init: init ? {
-        method: init.method,
-        headers: init.headers as Record<string, string>,
-        body: typeof init.body === 'string' ? init.body : undefined,
-      } : undefined,
-    })
-    if (bgResponse.success) {
-      return bgResponse.data as T
-    }
-    if (bgResponse.error) {
-      throw new Error(bgResponse.error)
-    }
-  } catch (bgError) {
-    if (bgError instanceof Error && !bgError.message.includes('Receiving end does not exist')) {
-      throw bgError
     }
   }
 
@@ -160,4 +169,26 @@ export function toLocalNote(
     updatedAt: now,
     userEdited: false,
   }
+}
+
+export async function generateSummary(requestBody: GenerateSummaryRequest): Promise<GeneratedSummaryResponse> {
+  const response = await request<GeneratedSummaryResponse>('/api/notes/summarize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  })
+  if (!response || typeof response.formattedMarkdown !== 'string') {
+    throw new Error('The summary service returned an invalid summary.')
+  }
+  return response
+}
+
+export async function askNote(requestBody: AskNoteRequest): Promise<GeneratedNoteResponse> {
+  const response = await request<unknown>('/api/notes/ask', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody),
+  })
+  if (!isGeneratedNote(response)) throw new Error('The notes service returned an invalid note.')
+  return response
 }

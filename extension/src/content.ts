@@ -7,6 +7,7 @@ if (typeof globalScope.__aiNotesCleanup === 'function') {
   } catch {}
 }
 globalScope.__aiNotesInjected = true
+globalScope.__aiNotesVersion = '1.2.0'
 
 let currentSession: LearningSession | null = null
 let nextCaptureAt = 0
@@ -111,11 +112,12 @@ function querySelectorAllDeep(selector: string, root: Document | ShadowRoot | El
 }
 
 function getOnScreenCaptionText(): string {
+  if (isAdPlaying()) return ''
   const elements = querySelectorAllDeep(CAPTION_SELECTOR)
     .filter((el) => {
       if (el.getClientRects().length === 0) return false
       if (['BUTTON', 'SELECT', 'INPUT', 'NAV', 'HEADER'].includes(el.tagName)) return false
-      if (el.closest('button, nav, .vjs-control-bar, .ytp-chrome-bottom, .jw-controls')) return false
+      if (el.closest('button, nav, .vjs-control-bar, .ytp-chrome-bottom, .jw-controls, .ytp-ad-player-overlay, .ytp-ad-module, .video-ads, .ad-showing, .ad-interrupting')) return false
       const text = el.textContent?.trim() ?? ''
       return text.length > 0 && text.length < 350
     })
@@ -147,7 +149,85 @@ function getTrackCues(timestampSeconds: number): string[] {
   return [...new Set(cues)]
 }
 
+function isAdPlaying(): boolean {
+  try {
+    const ytPlayer = document.querySelector('#movie_player, .html5-video-player')
+    if (ytPlayer && (ytPlayer.classList.contains('ad-showing') || ytPlayer.classList.contains('ad-interrupting'))) {
+      return true
+    }
+    if (document.querySelector('.ad-showing, .ad-interrupting')) {
+      return true
+    }
+
+    const skipBtn = document.querySelector(
+      '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, button.ytp-ad-skip-button, button.ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot button',
+    ) as HTMLElement | null
+    if (skipBtn && (skipBtn.offsetParent !== null || skipBtn.getClientRects().length > 0)) {
+      return true
+    }
+
+    const adText = document.querySelector(
+      '.ytp-ad-text, .ytp-ad-preview-text, .ytp-preview-ad__text, .ytp-ad-duration-remaining',
+    ) as HTMLElement | null
+    if (adText && adText.offsetParent !== null && (adText.textContent?.trim().length ?? 0) > 0) {
+      return true
+    }
+
+    const genericAd = document.querySelector('.vjs-ad-playing') as HTMLElement | null
+    if (genericAd && genericAd.offsetParent !== null) {
+      return true
+    }
+  } catch {}
+
+  return false
+}
+
+function trySkipAd(): void {
+  try {
+    const video = findVideo()
+    const adActive = isAdPlaying()
+
+    const skipSelectors = [
+      '.ytp-ad-skip-button',
+      '.ytp-ad-skip-button-modern',
+      '.ytp-skip-ad-button',
+      'button.ytp-ad-skip-button',
+      'button.ytp-ad-skip-button-modern',
+      '.ytp-ad-skip-button-slot button',
+      '.ytp-ad-skip-button-container button',
+      'button[class*="skip-button" i]',
+      'button[class*="ad-skip" i]',
+      '[class*="ytp-ad-skip" i]',
+      'button[aria-label*="Skip ad" i]',
+      'button[aria-label*="Skip ads" i]',
+      'button[aria-label*="Skip" i]',
+      '.videoAdUiSkipButton',
+    ]
+    for (const sel of skipSelectors) {
+      const btn = document.querySelector(sel) as HTMLElement | null
+      if (btn && typeof btn.click === 'function') {
+        btn.click()
+        return
+      }
+    }
+
+    const overlayClose = document.querySelector(
+      '.ytp-ad-overlay-close-button, [class*="ad-overlay-close" i], button.ytp-ad-overlay-close-button',
+    ) as HTMLElement | null
+    if (overlayClose && typeof overlayClose.click === 'function') {
+      overlayClose.click()
+    }
+
+    if (adActive && video && Number.isFinite(video.duration) && video.duration > 0 && video.duration < 180) {
+      try {
+        video.currentTime = video.duration
+      } catch {}
+    }
+  } catch {}
+}
+
 function bufferCurrentCaptions(timestampSeconds: number): void {
+  if (isAdPlaying()) return
   const current = getOnScreenCaptionText()
   if (current) {
     const last = captionBuffer.at(-1)
@@ -180,6 +260,7 @@ function bufferCurrentCaptions(timestampSeconds: number): void {
 }
 
 function collectTranscript(timestampSeconds: number): string {
+  if (isAdPlaying()) return ''
   const youtubeSegments = Array.from(document.querySelectorAll('ytd-transcript-segment-renderer'))
     .map((segment) => {
       const timestamp = segment.querySelector('.segment-start-offset, .segment-timestamp, [class*="start-offset" i], [class*="timestamp" i]')?.textContent ?? ''
@@ -224,6 +305,7 @@ function collectTranscript(timestampSeconds: number): string {
 }
 
 function captureVideoFrame(): string | undefined {
+  if (isAdPlaying()) return undefined
   const video = findVideo()
   if (!video || !video.videoWidth || !video.videoHeight) return undefined
   try {
@@ -396,6 +478,7 @@ function readVideoSnapshot(includeScreenshot = false): VideoSnapshot | null {
           : isWithinDomain(url.hostname, 'oracle.com') || isWithinDomain(url.hostname, 'oracleacademy.com') || location.hostname.includes('oracle') || document.referrer.includes('oracle')
             ? 'Oracle University'
             : url.hostname,
+    isAd: isAdPlaying(),
   }
 
   if (includeScreenshot) {
@@ -463,9 +546,18 @@ function safeSendMessage(message: ExtensionMessage): void {
 
 function sendCapture(): void {
   if (!isContextValid()) return
+  if (isAdPlaying()) {
+    trySkipAd()
+    if (currentSession) {
+      const video = findVideo()
+      const currentSeconds = Math.floor(video?.currentTime ?? lastCapturedTimestamp)
+      nextCaptureAt = currentSeconds + 5
+    }
+    return
+  }
   const snapshot = readVideoSnapshot(true)
   if (!snapshot || !currentSession || currentSession.status !== 'active') return
-  if (!snapshot.isPlaying) return
+  if (!snapshot.isPlaying || snapshot.isAd) return
 
   const now = Date.now()
   const currentTimestamp = snapshot.timestampSeconds
@@ -509,6 +601,28 @@ function seek(timestampSeconds: number): boolean {
   return true
 }
 
+let adObserver: MutationObserver | null = null
+
+function setupAdObserver(): void {
+  if (adObserver !== null) return
+  try {
+    adObserver = new MutationObserver(() => {
+      if (isAdPlaying()) {
+        trySkipAd()
+      }
+    })
+    const target = document.body || document.documentElement
+    if (target) {
+      adObserver.observe(target, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class'],
+      })
+    }
+  } catch {}
+}
+
 globalScope.__aiNotesReadSnapshot = readVideoSnapshot
 globalScope.__aiNotesCaptureFrame = captureVideoFrame
 globalScope.__aiNotesSetSession = setSession
@@ -517,6 +631,10 @@ globalScope.__aiNotesCleanup = () => {
   if (intervalTimer !== null) {
     window.clearInterval(intervalTimer)
     intervalTimer = null
+  }
+  if (adObserver !== null) {
+    adObserver.disconnect()
+    adObserver = null
   }
 }
 
@@ -571,20 +689,26 @@ intervalTimer = window.setInterval(() => {
     return
   }
   const video = findVideo()
-  if (video) {
+  const adActive = isAdPlaying()
+  if (adActive) {
+    trySkipAd()
+  }
+  if (video && !adActive) {
     bufferCurrentCaptions(Math.floor(video.currentTime))
   }
   if (video && currentSession) {
     const snapshot = readVideoSnapshot()
-    if (snapshot && isDifferentVideo(snapshot, currentSession)) {
+    if (snapshot && !adActive && isDifferentVideo(snapshot, currentSession)) {
       currentSession = null
       safeSendMessage({ type: 'CONTENT_VIDEO_CHANGED' } satisfies ExtensionMessage)
       return
     }
   }
-  if (!video || !currentSession || currentSession.status !== 'active' || video.paused || video.ended) return
+  if (!video || !currentSession || currentSession.status !== 'active' || video.paused || video.ended || adActive) return
   if (video.currentTime < nextCaptureAt - currentSession.captureIntervalSeconds - 2) {
     nextCaptureAt = Math.floor(video.currentTime) + currentSession.captureIntervalSeconds
   }
   if (video.currentTime >= nextCaptureAt) sendCapture()
 }, 1000)
+
+setupAdObserver()

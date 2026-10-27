@@ -21,4 +21,14 @@ public class NotesController {
 	public GeneratedNote generate(@Valid @RequestBody GenerateNoteRequest request) {
 		return noteGenerationService.generate(request);
 	}
+
+	@PostMapping("/summarize")
+	public GeneratedSummary summarize(@Valid @RequestBody GenerateSummaryRequest request) {
+		return noteGenerationService.generateSummary(request);
+	}
+
+	@PostMapping("/ask")
+	public GeneratedNote ask(@Valid @RequestBody AskNoteRequest request) {
+		return noteGenerationService.askNote(request);
+	}
 }

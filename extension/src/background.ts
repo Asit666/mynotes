@@ -58,7 +58,7 @@ async function ensureContentScriptInTab(tabId: number): Promise<void> {
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId },
-      func: () => Boolean((window as unknown as Record<string, unknown>).__aiNotesInjected),
+      func: () => (window as unknown as Record<string, unknown>).__aiNotesVersion === '1.2.0',
     }).catch(() => [])
 
     if (results?.[0]?.result) {
@@ -155,6 +155,10 @@ async function readTabVideo(tabId: number): Promise<VideoSnapshot> {
         if (vids.length === 0) return null
         const video = vids.length === 1 ? vids[0] : vids.sort((a, b) => Number(!b.paused) - Number(!a.paused) || (b.clientWidth * b.clientHeight) - (a.clientWidth * a.clientHeight))[0]
         if (!video) return null
+        const isAd = Boolean(
+          document.querySelector('#movie_player.ad-showing, .html5-video-player.ad-showing, .ad-showing, .ad-interrupting')
+          || (document.querySelector('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button') as HTMLElement | null)?.offsetParent !== null,
+        )
         return {
           videoId: location.href,
           videoUrl: location.href,
@@ -164,17 +168,25 @@ async function readTabVideo(tabId: number): Promise<VideoSnapshot> {
           isPlaying: !video.paused && !video.ended,
           transcriptText: '',
           platformName: location.hostname.includes('oracle') ? 'Oracle University' : location.hostname.includes('skillbuilder.aws') ? 'AWS Skill Builder' : location.hostname,
+          isAd,
         }
       },
     })
 
+    let anyFrameIsAd = false
     for (const item of results) {
       const snap = item.result as VideoSnapshot | null
+      if (snap?.isAd) {
+        anyFrameIsAd = true
+      }
       if (snap && snap.videoId) {
-        if (!bestSnapshot || (snap.isPlaying && !bestSnapshot.isPlaying) || (snap.durationSeconds > (bestSnapshot?.durationSeconds ?? 0))) {
+        if (!bestSnapshot || item.frameId === 0 || (snap.isPlaying && !bestSnapshot.isPlaying)) {
           bestSnapshot = snap
         }
       }
+    }
+    if (bestSnapshot && anyFrameIsAd) {
+      bestSnapshot.isAd = true
     }
   } catch (error) {
     console.warn('Script execution for video search failed:', error)
@@ -291,6 +303,7 @@ async function getUiState(): Promise<ExtensionResponse> {
   }
 
   try {
+    await ensureContentScriptInTab(tab.id)
     const video = await readTabVideo(tab.id)
     return { success: true, session: session ?? null, video }
   } catch {
@@ -301,6 +314,7 @@ async function getUiState(): Promise<ExtensionResponse> {
 async function startSession(
   captureIntervalSeconds: number,
   captureAudio: boolean,
+  groupId?: string | null,
 ): Promise<ExtensionResponse> {
   if (!CAPTURE_INTERVALS.includes(captureIntervalSeconds)) {
     throw new Error('Choose a capture interval of 15, 30, 60, or 120 seconds.')
@@ -328,6 +342,7 @@ async function startSession(
     captureIntervalSeconds,
     captureAudio,
     status: 'active',
+    groupId: groupId ?? null,
   }
 
   if (captureAudio && !audioStreamId) {
@@ -377,6 +392,46 @@ async function updateActiveSession(status: LearningSession['status']): Promise<E
   }
   await saveSession(updated)
   await updateContentSession(updated.tabId, status === 'completed' ? null : updated)
+  sendUpdated()
+  return { success: true, session: updated }
+}
+
+async function reopenSession(sessionId: string): Promise<ExtensionResponse> {
+  const target = await getSession(sessionId)
+  if (!target) throw new Error('The note session could not be found.')
+
+  const current = await activeSession()
+  if (current && current.id !== target.id) {
+    const paused = { ...current, status: 'paused' as const }
+    await saveSession(paused)
+    await updateContentSession(current.tabId, null)
+  }
+
+  const tabs = await chrome.tabs.query({})
+  let targetTab = tabs.find((t) => t.id === target.tabId && t.url && !t.url.startsWith('chrome'))
+  if (!targetTab && target.videoId) {
+    targetTab = tabs.find((t) => t.url && (t.url.includes(target.videoId) || (target.videoUrl && t.url === target.videoUrl)))
+  }
+  if (!targetTab) {
+    targetTab = await getActiveTab()
+  }
+
+  const tabId = targetTab?.id ?? target.tabId
+
+  const updated: LearningSession = {
+    ...target,
+    status: 'active',
+    endedAt: undefined,
+    tabId,
+  }
+
+  await saveSession(updated)
+  if (tabId) {
+    try {
+      await ensureContentScriptInTab(tabId)
+      await updateContentSession(tabId, updated)
+    } catch {}
+  }
   sendUpdated()
   return { success: true, session: updated }
 }
@@ -526,6 +581,14 @@ async function takeCapture(
   }
 
   const video = snapshot ?? await readTabVideo(tabId)
+
+  // Ignore captures if an ad is actively playing
+  if (video.isAd) {
+    if (!allowPaused) {
+      return { success: true }
+    }
+    throw new Error('An advertisement is currently playing. Capturing is paused until the lecture resumes.')
+  }
 
   // Automatic captures must only run when the video is actively playing
   if (!allowPaused && !video.isPlaying) {
@@ -740,13 +803,15 @@ async function handleMessage(
       return { success: true, video: await readTabVideo(tab.id!) }
     }
     case 'SESSION_START':
-      return startSession(message.captureIntervalSeconds, message.captureAudio ?? false)
+      return startSession(message.captureIntervalSeconds, message.captureAudio ?? false, message.groupId)
     case 'SESSION_PAUSE':
       return updateActiveSession('paused')
     case 'SESSION_RESUME':
       return updateActiveSession('active')
     case 'SESSION_STOP':
       return updateActiveSession('completed')
+    case 'SESSION_REOPEN':
+      return reopenSession(message.sessionId)
     case 'SET_CAPTURE_INTERVAL':
       return updateCaptureInterval(message.captureIntervalSeconds)
     case 'SET_PROVIDER_PREFERENCES': {
@@ -763,8 +828,13 @@ async function handleMessage(
     case 'SEEK_VIDEO':
       return seekVideo(message.sessionId, message.timestampSeconds)
     case 'CAPTURE_NOW': {
-      const session = await activeSession()
-      if (!session) throw new Error('Start a learning session before capturing.')
+      let session = message.sessionId ? await getSession(message.sessionId) : await activeSession()
+      if (!session) session = await activeSession()
+      if (!session) throw new Error('Start or continue a learning session before capturing.')
+      if (session.status === 'completed') {
+        await reopenSession(session.id)
+        session = (await getSession(session.id)) ?? session
+      }
       return takeCapture(session.tabId, undefined, true)
     }
     case 'CAPTURE_RETRY':
@@ -843,6 +913,16 @@ chrome.runtime.onStartup.addListener(() => {
   })
 })
 
+chrome.tabs.onActivated.addListener(() => {
+  sendUpdated()
+})
+
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+  if (changeInfo.status === 'complete' || changeInfo.url) {
+    sendUpdated()
+  }
+})
+
 let sessionTicker: ReturnType<typeof setInterval> | null = null
 
 function ensureSessionTicker() {
@@ -854,7 +934,7 @@ function ensureSessionTicker() {
         if (!session || session.status !== 'active') return
 
         const video = await readTabVideo(session.tabId).catch(() => null)
-        if (!video || !video.isPlaying) return
+        if (!video || !video.isPlaying || video.isAd) return
 
         const existingCaptures = await listCaptures(session.id)
         if (existingCaptures.length === 0) {
