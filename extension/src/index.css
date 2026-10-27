@@ -1578,7 +1578,8 @@ pre {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
+  gap: 10px;
 }
 
 .ask-proposal-meta {
@@ -1591,48 +1592,69 @@ pre {
 .ask-badge {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  border-radius: 6px;
-  padding: 2px 7px;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 2px 10px;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 600;
   letter-spacing: 0.01em;
   line-height: 16px;
-  height: 20px;
+  height: 22px;
   box-sizing: border-box;
-}
-
-.ask-badge.added {
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  color: #059669;
-}
-
-:root[data-theme="dark"] .ask-badge.added {
-  background: rgba(52, 211, 153, 0.1);
-  border-color: rgba(52, 211, 153, 0.25);
-  color: #34d399;
+  white-space: nowrap;
 }
 
 .ask-badge.pending {
   background: var(--s2);
   border: 1px solid var(--line);
-  color: var(--mute);
+  color: var(--ink);
+}
+
+.ask-badge.added {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.22);
+  color: #059669;
+}
+
+:root[data-theme="dark"] .ask-badge.added {
+  background: rgba(52, 211, 153, 0.1);
+  border-color: rgba(52, 211, 153, 0.24);
+  color: #34d399;
 }
 
 .ask-badge .badge-icon {
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
   stroke: currentColor;
   flex-shrink: 0;
 }
 
 .ask-badge .badge-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--pri);
   flex-shrink: 0;
+}
+
+.ask-dismiss-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.ask-dismiss-btn:hover {
+  background: var(--s2);
+  color: var(--ink);
 }
 
 .ask-prompt-quote {
@@ -1642,13 +1664,13 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 280px;
+  max-width: 260px;
 }
 
 .ask-proposal-title {
-  margin: 0 0 6px;
-  font-size: 14.5px;
-  font-weight: 650;
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 680;
   color: var(--ink);
   line-height: 1.35;
 }
@@ -1656,9 +1678,9 @@ pre {
 .ask-proposal-explanation {
   margin: 0 0 10px;
   font-size: 13px;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--ink);
-  opacity: 0.9;
+  opacity: 0.92;
 }
 
 .ask-proposal-points {
@@ -1670,7 +1692,7 @@ pre {
 }
 
 .ask-proposal-points li {
-  margin-bottom: 4px;
+  margin-bottom: 5px;
 }
 
 .ask-proposal-footer {
@@ -1692,6 +1714,37 @@ pre {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.ask-approve-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: var(--inv);
+  color: var(--invink);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.ask-approve-btn:hover {
+  opacity: 0.88;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
+.ask-approve-btn:active {
+  transform: scale(0.98);
+}
+
+.ask-approve-btn svg {
+  flex-shrink: 0;
 }
 
 @container (max-width: 400px) {

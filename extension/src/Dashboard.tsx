@@ -1878,15 +1878,18 @@ export default function Dashboard() {
                                 AI proposal
                               </span>
                             )}
-                            <span className="ask-prompt-quote">"{proposal.prompt}"</span>
+                            <span className="ask-prompt-quote" title={proposal.prompt}>"{proposal.prompt}"</span>
                           </div>
                           <button
-                            className="btn-icon"
+                            className="ask-dismiss-btn"
                             onClick={() => handleDismissProposal(proposal.id)}
                             title="Remove proposal"
-                            style={{ opacity: 0.5, border: 0, background: 'none', cursor: 'pointer', color: 'var(--mute)' }}
+                            aria-label="Remove proposal"
                           >
-                            ✕
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <line x1="18" y1="6" x2="6" y2="18" />
+                              <line x1="6" y1="6" x2="18" y2="18" />
+                            </svg>
                           </button>
                         </div>
 
@@ -1925,11 +1928,13 @@ export default function Dashboard() {
                               </>
                             ) : (
                               <button
-                                className="btn pri"
-                                style={{ minHeight: 32, padding: '0 16px', fontWeight: 650 }}
+                                className="ask-approve-btn"
                                 onClick={() => void handleApproveProposal(proposal.id)}
                               >
-                                ✓ Approve & Add to Notes
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                                <span>Approve & add to notes</span>
                               </button>
                             )}
                           </div>
