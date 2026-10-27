@@ -175,7 +175,7 @@ public class NoteGenerationService {
 				throw new ProviderRequestException("The AI provider returned an incomplete study note.");
 			}
 
-			long ts = request.timestampSeconds() != null ? request.timestampSeconds() : 0L;
+			long ts = request.timestampSeconds() != null ? Math.max(0L, request.timestampSeconds()) : 0L;
 			return new GeneratedNote(
 				note.title().strip(),
 				note.explanation().strip(),

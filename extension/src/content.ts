@@ -627,18 +627,7 @@ globalScope.__aiNotesReadSnapshot = readVideoSnapshot
 globalScope.__aiNotesCaptureFrame = captureVideoFrame
 globalScope.__aiNotesSetSession = setSession
 globalScope.__aiNotesSeek = seek
-globalScope.__aiNotesCleanup = () => {
-  if (intervalTimer !== null) {
-    window.clearInterval(intervalTimer)
-    intervalTimer = null
-  }
-  if (adObserver !== null) {
-    adObserver.disconnect()
-    adObserver = null
-  }
-}
-
-chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
+const messageListener = (message: ExtensionMessage, _sender: chrome.runtime.MessageSender, sendResponse: (response: unknown) => void) => {
   if (message.type === 'CONTENT_GET_VIDEO_STATE') {
     sendResponse({ success: true, video: readVideoSnapshot() })
     return
@@ -654,7 +643,23 @@ chrome.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendRe
     const success = seek(message.timestampSeconds)
     sendResponse({ success, error: success ? undefined : 'The video player is no longer available.' })
   }
-})
+}
+
+globalScope.__aiNotesCleanup = () => {
+  if (intervalTimer !== null) {
+    window.clearInterval(intervalTimer)
+    intervalTimer = null
+  }
+  if (adObserver !== null) {
+    adObserver.disconnect()
+    adObserver = null
+  }
+  try {
+    chrome.runtime.onMessage.removeListener(messageListener)
+  } catch {}
+}
+
+chrome.runtime.onMessage.addListener(messageListener)
 
 function isDifferentVideo(snapshot: VideoSnapshot, session: LearningSession): boolean {
   if (snapshot.videoId === session.videoId) return false

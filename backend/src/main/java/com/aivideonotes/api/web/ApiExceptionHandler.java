@@ -27,6 +27,12 @@ public class ApiExceptionHandler {
 		return ResponseEntity.badRequest().body(new ApiError(message));
 	}
 
+	@ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+	public ResponseEntity<ApiError> handleUnreadableBody(org.springframework.http.converter.HttpMessageNotReadableException exception) {
+		log.warn("Malformed JSON request body: {}", exception.getMessage());
+		return ResponseEntity.badRequest().body(new ApiError("Malformed JSON request body."));
+	}
+
 	@ExceptionHandler(ProviderConfigurationException.class)
 	public ResponseEntity<ApiError> handleMissingProvider(ProviderConfigurationException exception) {
 		log.warn("Provider configuration error: {}", exception.getMessage());
