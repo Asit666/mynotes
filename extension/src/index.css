@@ -1605,27 +1605,21 @@ pre {
 }
 
 .ask-badge.pending {
+  background: var(--card);
+  border: 1px solid var(--line);
+  color: var(--mute);
+}
+
+.ask-badge.added {
   background: var(--s2);
   border: 1px solid var(--line);
   color: var(--ink);
 }
 
-.ask-badge.added {
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.22);
-  color: #059669;
-}
-
-:root[data-theme="dark"] .ask-badge.added {
-  background: rgba(52, 211, 153, 0.1);
-  border-color: rgba(52, 211, 153, 0.24);
-  color: #34d399;
-}
-
 .ask-badge .badge-icon {
   width: 11px;
   height: 11px;
-  stroke: currentColor;
+  stroke: var(--ink);
   flex-shrink: 0;
 }
 
@@ -1633,7 +1627,8 @@ pre {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--pri);
+  background: var(--ink);
+  opacity: 0.45;
   flex-shrink: 0;
 }
 
