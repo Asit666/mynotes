@@ -547,18 +547,24 @@ select.btn {
 }
 
 .rail {
+  --rail-x: 8px;
   position: relative;
-  padding-left: 22px;
+  padding-left: 24px;
 }
 
 .rail::before {
   content: "";
   position: absolute;
-  left: 5px;
-  top: 10px;
-  bottom: 10px;
-  width: 1px;
-  background: linear-gradient(var(--ink), transparent);
+  left: var(--rail-x);
+  top: 14px;
+  bottom: 14px;
+  width: 2px;
+  background: linear-gradient(to bottom, var(--ink) 0%, rgba(255, 255, 255, 0.2) 100%);
+  transform: translateX(-50%);
+}
+
+:root:not([data-theme="dark"]) .rail::before {
+  background: linear-gradient(to bottom, var(--ink) 0%, rgba(0, 0, 0, 0.15) 100%);
 }
 
 .note {
@@ -571,13 +577,16 @@ select.btn {
 .note::before {
   content: "";
   position: absolute;
-  left: -21px;
-  top: 20px;
-  width: 11px;
-  height: 11px;
+  left: calc(var(--rail-x) - 24px);
+  top: 22px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: var(--bg);
   border: 2px solid var(--ink);
+  transform: translateX(-50%);
+  z-index: 2;
+  box-sizing: border-box;
 }
 
 .nh {
