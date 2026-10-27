@@ -20,6 +20,8 @@
 
 ## 01 About
 
+> **Note**: This is a personal project made to help me learn and take notes as I want as a student, designed to be flexible and adapt to my own study workflow.
+
 **AI Video Notes** is an intelligent, local-first Chrome extension and background daemon designed for **YouTube, AWS Skill Builder, Coursera, Oracle Academy**, and any web page hosting an HTML5 video player.
 
 While watching lectures, certification courses, or technical tutorials, the extension autonomously captures timestamped moments, extracts video frames directly from the player via in-memory `<canvas>` rendering, collects captions or subtitles, and synthesizes clear, high-yield study notes with visual slide grounding.
