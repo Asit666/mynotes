@@ -1565,15 +1565,13 @@ pre {
 .ask-proposal-card {
   background: var(--card);
   border: 1px solid var(--line);
-  border-left: 4px solid var(--pri);
   border-radius: 12px;
   padding: 14px 16px;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.ask-proposal-card.is-added {
-  border-left-color: #22c55e;
-  background: var(--card);
+.ask-proposal-card:hover {
+  border-color: var(--mute);
 }
 
 .ask-proposal-top {
@@ -1590,16 +1588,51 @@ pre {
   flex-wrap: wrap;
 }
 
-.tag-pending {
-  background: rgba(59, 130, 246, 0.12) !important;
-  color: var(--pri) !important;
-  border: 1px solid rgba(59, 130, 246, 0.3);
+.ask-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  line-height: 16px;
+  height: 20px;
+  box-sizing: border-box;
 }
 
-.tag-approved {
-  background: rgba(34, 197, 94, 0.12) !important;
-  color: #22c55e !important;
-  border: 1px solid rgba(34, 197, 94, 0.3);
+.ask-badge.added {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: #059669;
+}
+
+:root[data-theme="dark"] .ask-badge.added {
+  background: rgba(52, 211, 153, 0.1);
+  border-color: rgba(52, 211, 153, 0.25);
+  color: #34d399;
+}
+
+.ask-badge.pending {
+  background: var(--s2);
+  border: 1px solid var(--line);
+  color: var(--mute);
+}
+
+.ask-badge .badge-icon {
+  width: 10px;
+  height: 10px;
+  stroke: currentColor;
+  flex-shrink: 0;
+}
+
+.ask-badge .badge-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--pri);
+  flex-shrink: 0;
 }
 
 .ask-prompt-quote {

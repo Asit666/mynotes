@@ -1865,9 +1865,19 @@ export default function Dashboard() {
                       <article key={proposal.id} className={`ask-proposal-card ${proposal.added ? 'is-added' : ''}`}>
                         <div className="ask-proposal-top">
                           <div className="ask-proposal-meta">
-                            <span className={`tag ${proposal.added ? 'tag-approved' : 'tag-pending'}`}>
-                              {proposal.added ? '✓ Added to Notes' : 'AI Proposal'}
-                            </span>
+                            {proposal.added ? (
+                              <span className="ask-badge added">
+                                <svg className="badge-icon" viewBox="0 0 24 24" fill="none" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                                Added to notes
+                              </span>
+                            ) : (
+                              <span className="ask-badge pending">
+                                <span className="badge-dot" />
+                                AI proposal
+                              </span>
+                            )}
                             <span className="ask-prompt-quote">"{proposal.prompt}"</span>
                           </div>
                           <button
