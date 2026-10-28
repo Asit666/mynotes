@@ -18,14 +18,85 @@ import {
   deleteNote as storageDeleteNote,
   deleteSession as storageDeleteSession,
   getSession,
+  listAllNotes,
   listCaptures,
   listGroups,
   listNotes,
+  listSearchableCaptures,
   listSessions,
   saveGroup as storageSaveGroup,
   saveNote as storageSaveNote,
   saveSession,
+  type SearchableCapture,
 } from './storage'
+
+export type SearchMatchKind = 'explanation' | 'keypoint' | 'transcript' | 'slide' | 'note-title' | 'summary'
+
+export interface SessionSearchMatch {
+  id: string
+  sessionId: string
+  timestampSeconds: number
+  kind: SearchMatchKind
+  snippet: string
+  noteId?: string
+}
+
+function extractSnippet(text: string, query: string, maxLength = 110): string {
+  if (!text) return ''
+  const clean = text.replace(/^\[Visual slide:?\s*/i, '').replace(/\]$/, '').trim()
+  const lowerText = clean.toLowerCase()
+  const lowerQ = query.toLowerCase()
+  const idx = lowerText.indexOf(lowerQ)
+  if (idx === -1) {
+    return clean.length > maxLength ? clean.slice(0, maxLength) + '…' : clean
+  }
+  const start = Math.max(0, idx - 30)
+  const end = Math.min(clean.length, idx + query.length + 50)
+  let snippet = clean.slice(start, end).trim()
+  if (start > 0) snippet = '…' + snippet
+  if (end < clean.length) snippet = snippet + '…'
+  return snippet
+}
+
+function HighlightSnippet({ text, query }: { text: string; query: string }) {
+  if (!query || !query.trim() || !text) return <span>{text}</span>
+  const q = query.trim()
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const regex = new RegExp(`(${escaped})`, 'gi')
+  const parts = text.split(regex)
+  return (
+    <span>
+      {parts.map((part, i) =>
+        regex.test(part) ? (
+          <mark key={i} className="search-highlight">
+            {part}
+          </mark>
+        ) : (
+          part
+        )
+      )}
+    </span>
+  )
+}
+
+function formatMatchKind(kind: SearchMatchKind): string {
+  switch (kind) {
+    case 'note-title':
+      return 'Title'
+    case 'explanation':
+      return 'Explanation'
+    case 'keypoint':
+      return 'Key Point'
+    case 'slide':
+      return 'Slide'
+    case 'transcript':
+      return 'Transcript'
+    case 'summary':
+      return 'Summary'
+    default:
+      return 'Note'
+  }
+}
 
 const intervals = [15, 30, 60, 120]
 
@@ -66,6 +137,215 @@ const SUGGESTED_MODELS: Record<AiProvider, string[]> = {
   ANTHROPIC: ['claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-opus-4-5'],
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function formatInline(text: string): string {
+  let res = escapeHtml(text)
+  res = res.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+  res = res.replace(/(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+  res = res.replace(/`([^`]+)`/g, '<code style="background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; font-family: monospace;">$1</code>')
+  res = res.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+  return res
+}
+
+function markdownToHtml(markdown: string, captures: VideoCapture[]): string {
+  const assetMap = new Map<string, string>()
+  for (const c of captures) {
+    if (c.screenshotDataUrl) {
+      const formattedTs = formatTimestamp(c.timestampSeconds).replace(':', '-')
+      assetMap.set(`assets/capture-${formattedTs}-${c.id}.jpg`, c.screenshotDataUrl)
+      assetMap.set(c.id, c.screenshotDataUrl)
+    }
+  }
+
+  const lines = markdown.split('\n')
+  const htmlParts: string[] = []
+  let inList = false
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i]
+    const line = rawLine.trim()
+
+    if (!line) {
+      if (inList) {
+        htmlParts.push('</ul>')
+        inList = false
+      }
+      continue
+    }
+
+    if (line === '---' || line === '***') {
+      if (inList) {
+        htmlParts.push('</ul>')
+        inList = false
+      }
+      htmlParts.push('<hr style="margin: 24px 0; border: none; border-top: 1px solid #e2e8f0;" />')
+      continue
+    }
+
+    if (line.startsWith('# ')) {
+      if (inList) {
+        htmlParts.push('</ul>')
+        inList = false
+      }
+      htmlParts.push(`<h1 style="font-size: 24px; font-weight: 700; margin: 24px 0 12px 0;">${formatInline(line.slice(2))}</h1>`)
+      continue
+    }
+    if (line.startsWith('## ')) {
+      if (inList) {
+        htmlParts.push('</ul>')
+        inList = false
+      }
+      htmlParts.push(`<h2 style="font-size: 20px; font-weight: 600; margin: 20px 0 10px 0;">${formatInline(line.slice(3))}</h2>`)
+      continue
+    }
+    if (line.startsWith('### ')) {
+      if (inList) {
+        htmlParts.push('</ul>')
+        inList = false
+      }
+      htmlParts.push(`<h3 style="font-size: 16px; font-weight: 600; margin: 16px 0 8px 0;">${formatInline(line.slice(4))}</h3>`)
+      continue
+    }
+    if (line.startsWith('#### ')) {
+      if (inList) {
+        htmlParts.push('</ul>')
+        inList = false
+      }
+      htmlParts.push(`<h4 style="font-size: 14px; font-weight: 600; margin: 12px 0 6px 0;">${formatInline(line.slice(5))}</h4>`)
+      continue
+    }
+
+    const imgMatch = line.match(/^!\[(.*?)\]\((.*?)\)$/)
+    if (imgMatch) {
+      if (inList) {
+        htmlParts.push('</ul>')
+        inList = false
+      }
+      const alt = imgMatch[1]
+      let src = imgMatch[2]
+      if (assetMap.has(src)) {
+        src = assetMap.get(src)!
+      } else {
+        for (const [key, dataUrl] of assetMap.entries()) {
+          if (src.includes(key)) {
+            src = dataUrl
+            break
+          }
+        }
+      }
+      htmlParts.push(`<p style="margin: 16px 0;"><img src="${src}" alt="${escapeHtml(alt)}" style="max-width: 100%; height: auto; border-radius: 8px; border: 1px solid #e2e8f0; display: block;" /></p>`)
+      continue
+    }
+
+    if (line.startsWith('- ') || line.startsWith('* ')) {
+      if (!inList) {
+        htmlParts.push('<ul style="margin: 8px 0 16px 20px; padding: 0;">')
+        inList = true
+      }
+      htmlParts.push(`<li style="margin-bottom: 6px;">${formatInline(line.slice(2))}</li>`)
+      continue
+    }
+
+    if (inList) {
+      htmlParts.push('</ul>')
+      inList = false
+    }
+
+    htmlParts.push(`<p style="margin: 8px 0 12px 0; line-height: 1.6;">${formatInline(line)}</p>`)
+  }
+
+  if (inList) {
+    htmlParts.push('</ul>')
+  }
+
+  return `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1e293b;">${htmlParts.join('\n')}</div>`
+}
+
+function compileRichHtml(
+  session: LearningSession,
+  notes: GeneratedNote[],
+  captures: VideoCapture[],
+): string {
+  const screenshotDataUrls = new Map(
+    captures
+      .filter((capture) => capture.screenshotDataUrl)
+      .map((capture) => [capture.id, capture.screenshotDataUrl!]),
+  )
+
+  const summarySectionHtml = session.summary
+    ? `
+      <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin: 20px 0;">
+        <h2 style="font-size: 20px; font-weight: 600; margin: 0 0 12px 0; color: #0f172a;">Executive Summary &amp; Study Overview</h2>
+        ${markdownToHtml(session.summary, captures)}
+      </div>
+      <hr style="margin: 24px 0; border: none; border-top: 1px solid #e2e8f0;" />
+    `
+    : ''
+
+  const noteSectionsHtml = notes
+    .map((note) => {
+      let screenshotUrl = note.captureId ? screenshotDataUrls.get(note.captureId) : undefined
+      if (!screenshotUrl) {
+        const fallback = captures.find(
+          (c) => c.screenshotDataUrl && Math.abs(c.timestampSeconds - note.startTimestampSeconds) <= 2,
+        )
+        screenshotUrl = fallback?.screenshotDataUrl
+      }
+
+      const keyPointsHtml =
+        note.keyPoints.length > 0
+          ? `
+            <h3 style="font-size: 15px; font-weight: 600; margin: 12px 0 6px 0; color: #334155;">Key points</h3>
+            <ul style="margin: 6px 0 12px 20px; padding: 0;">
+              ${note.keyPoints.map((point) => `<li style="margin-bottom: 4px;">${formatInline(point)}</li>`).join('')}
+            </ul>
+          `
+          : ''
+
+      const imageHtml = screenshotUrl
+        ? `
+          <div style="margin: 16px 0;">
+            <img src="${screenshotUrl}" alt="Video frame at ${formatTimestamp(note.startTimestampSeconds)}" style="max-width: 100%; height: auto; border-radius: 8px; border: 1px solid #e2e8f0; box-shadow: 0 2px 4px rgba(0,0,0,0.05); display: block;" />
+          </div>
+        `
+        : ''
+
+      return `
+        <div style="margin-bottom: 28px;">
+          <h2 style="font-size: 18px; font-weight: 600; margin: 20px 0 8px 0; color: #0f172a;">
+            ${formatTimestamp(note.startTimestampSeconds)} — ${escapeHtml(note.title)}
+          </h2>
+          <p style="margin: 6px 0 10px 0; line-height: 1.6; color: #334155;">${escapeHtml(note.explanation)}</p>
+          ${keyPointsHtml}
+          ${imageHtml}
+        </div>
+      `
+    })
+    .join('')
+
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 800px;">
+      <h1 style="font-size: 24px; font-weight: 700; margin: 0 0 8px 0; color: #0f172a;">${escapeHtml(session.videoTitle)}</h1>
+      <p style="margin: 4px 0 16px 0; font-size: 14px; color: #64748b;">
+        <strong>Source:</strong> <a href="${escapeHtml(session.videoUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(session.videoUrl)}</a><br />
+        ${session.platformName ? `<strong>Platform:</strong> ${escapeHtml(session.platformName)}<br />` : ''}
+        <em>Captured on ${new Date(session.startedAt).toLocaleString()}</em>
+      </p>
+      <hr style="margin: 20px 0; border: none; border-top: 1px solid #e2e8f0;" />
+      ${summarySectionHtml}
+      ${noteSectionsHtml}
+    </div>
+  `
+}
+
 function compileMarkdown(session: LearningSession, notes: GeneratedNote[], captures: VideoCapture[]): string {
   const screenshotPaths = new Map(
     captures
@@ -102,6 +382,487 @@ function compileMarkdown(session: LearningSession, notes: GeneratedNote[], captu
   ].join('\n')
 }
 
+function formatTimeAgo(timestampMs: number): string {
+  const sec = Math.max(0, Math.floor((Date.now() - timestampMs) / 1000))
+  if (sec < 5) return 'just now'
+  if (sec < 60) return `${sec}s ago`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m ago`
+  return `${Math.floor(min / 60)}h ago`
+}
+
+function parseTimestampToSeconds(ts: string): number | null {
+  if (!ts) return null
+  const clean = ts.trim().replace(/^[▶\s]+/, '')
+  const parts = clean.split(':').map(Number)
+  if (parts.some((n) => isNaN(n) || !isFinite(n))) return null
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1]
+  }
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2]
+  }
+  return null
+}
+
+function renderInline(
+  text: string,
+  assetMap: Map<string, string>,
+  onSeek?: (ts: number) => void,
+  keyPrefix = 'inline',
+): React.ReactNode[] {
+  const nodes: React.ReactNode[] = []
+  let remaining = text
+  let counter = 0
+
+  while (remaining.length > 0) {
+    // 1. Image: ![alt](url)
+    const imgMatch = remaining.match(/^!\[(.*?)\]\((.*?)\)/)
+    if (imgMatch) {
+      const alt = imgMatch[1]
+      const rawUrl = imgMatch[2]
+      let resolved = assetMap.get(rawUrl) || rawUrl
+      if (!assetMap.has(rawUrl)) {
+        for (const [k, v] of assetMap) {
+          if (rawUrl.includes(k) || k.includes(rawUrl)) {
+            resolved = v
+            break
+          }
+        }
+      }
+      nodes.push(
+        <img
+          key={`${keyPrefix}-img-${counter++}`}
+          src={resolved}
+          alt={alt}
+          className="doc-preview-inline-img"
+          style={{ maxWidth: '100%', borderRadius: 8, border: '1px solid var(--line)', margin: '8px 0', display: 'block' }}
+        />,
+      )
+      remaining = remaining.slice(imgMatch[0].length)
+      continue
+    }
+
+    // 2. Link: [label](url)
+    const linkMatch = remaining.match(/^\[(.*?)\]\((.*?)\)/)
+    if (linkMatch) {
+      const label = linkMatch[1]
+      const url = linkMatch[2]
+      const ts = parseTimestampToSeconds(label)
+      if (ts !== null && onSeek) {
+        nodes.push(
+          <button
+            key={`${keyPrefix}-ts-${counter++}`}
+            className="ts"
+            onClick={() => onSeek(ts)}
+            title={`Seek video to ${label}`}
+            style={{ display: 'inline-flex', verticalAlign: 'middle', margin: '0 4px' }}
+          >
+            ▶ {label.replace(/^[▶\s]+/, '')}
+          </button>,
+        )
+      } else {
+        nodes.push(
+          <a
+            key={`${keyPrefix}-a-${counter++}`}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="doc-preview-link"
+          >
+            {label}
+          </a>,
+        )
+      }
+      remaining = remaining.slice(linkMatch[0].length)
+      continue
+    }
+
+    // 3. Inline code: `code`
+    const codeMatch = remaining.match(/^`([^`]+)`/)
+    if (codeMatch) {
+      nodes.push(
+        <code key={`${keyPrefix}-code-${counter++}`} className="doc-preview-code">
+          {codeMatch[1]}
+        </code>,
+      )
+      remaining = remaining.slice(codeMatch[0].length)
+      continue
+    }
+
+    // 4. Bold: **text**
+    const boldMatch = remaining.match(/^\*\*([^*]+)\*\*/)
+    if (boldMatch) {
+      nodes.push(
+        <strong key={`${keyPrefix}-b-${counter++}`}>
+          {renderInline(boldMatch[1], assetMap, onSeek, `${keyPrefix}-b-${counter}`)}
+        </strong>,
+      )
+      remaining = remaining.slice(boldMatch[0].length)
+      continue
+    }
+
+    // 5. Italic: *text*
+    const italicMatch = remaining.match(/^\*([^*]+)\*/)
+    if (italicMatch) {
+      nodes.push(
+        <em key={`${keyPrefix}-i-${counter++}`}>
+          {renderInline(italicMatch[1], assetMap, onSeek, `${keyPrefix}-i-${counter}`)}
+        </em>,
+      )
+      remaining = remaining.slice(italicMatch[0].length)
+      continue
+    }
+
+    // 6. Strikethrough: ~~text~~
+    const strikeMatch = remaining.match(/^~~([^~]+)~~/)
+    if (strikeMatch) {
+      nodes.push(
+        <del key={`${keyPrefix}-del-${counter++}`}>
+          {strikeMatch[1]}
+        </del>,
+      )
+      remaining = remaining.slice(strikeMatch[0].length)
+      continue
+    }
+
+    // Next special character
+    const nextSpecial = remaining.search(/[!\[`*~]/)
+    if (nextSpecial === -1) {
+      nodes.push(remaining)
+      break
+    } else if (nextSpecial === 0) {
+      nodes.push(remaining[0])
+      remaining = remaining.slice(1)
+    } else {
+      nodes.push(remaining.slice(0, nextSpecial))
+      remaining = remaining.slice(nextSpecial)
+    }
+  }
+
+  return nodes
+}
+
+interface MarkdownPreviewProps {
+  markdown: string
+  captures: VideoCapture[]
+  onSeek: (seconds: number) => void
+  onImageClick?: (src: string) => void
+}
+
+function MarkdownPreview({ markdown, captures, onSeek, onImageClick }: MarkdownPreviewProps) {
+  const assetMap = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const c of captures) {
+      if (c.screenshotDataUrl) {
+        const formattedTs = formatTimestamp(c.timestampSeconds).replace(':', '-')
+        map.set(`assets/capture-${formattedTs}-${c.id}.jpg`, c.screenshotDataUrl)
+        map.set(c.id, c.screenshotDataUrl)
+        map.set(`capture-${c.id}`, c.screenshotDataUrl)
+      }
+    }
+    return map
+  }, [captures])
+
+  const resolveImageSrc = (src: string): string => {
+    if (assetMap.has(src)) return assetMap.get(src)!
+    for (const [k, v] of assetMap) {
+      if (src.includes(k) || k.includes(src)) return v
+    }
+    return src
+  }
+
+  const blocks = useMemo(() => {
+    const lines = markdown.split('\n')
+    const result: React.ReactNode[] = []
+    let i = 0
+
+    while (i < lines.length) {
+      const line = lines[i]
+      const trimmed = line.trim()
+
+      if (!trimmed) {
+        i++
+        continue
+      }
+
+      // 1. Fenced Code Block
+      if (trimmed.startsWith('```')) {
+        const lang = trimmed.slice(3).trim()
+        const codeLines: string[] = []
+        i++
+        while (i < lines.length && !lines[i].trim().startsWith('```')) {
+          codeLines.push(lines[i])
+          i++
+        }
+        if (i < lines.length) i++
+        const codeText = codeLines.join('\n')
+        result.push(
+          <div key={`code-${i}`} className="doc-code-block">
+            <div className="doc-code-header">
+              <span>{lang || 'code'}</span>
+              <button
+                className="doc-copy-code-btn"
+                type="button"
+                onClick={() => {
+                  void navigator.clipboard.writeText(codeText)
+                }}
+              >
+                Copy
+              </button>
+            </div>
+            <pre>
+              <code>{codeText}</code>
+            </pre>
+          </div>,
+        )
+        continue
+      }
+
+      // 2. Headings
+      if (trimmed.startsWith('# ') || trimmed === '#') {
+        result.push(
+          <h1 key={`h1-${i}`}>
+            {renderInline(trimmed.slice(2).trim(), assetMap, onSeek, `h1-${i}`)}
+          </h1>,
+        )
+        i++
+        continue
+      }
+
+      if (trimmed.startsWith('## ') || trimmed === '##') {
+        const headingText = trimmed.slice(3).trim()
+        const tsMatch = headingText.match(/^(\d{1,2}:\d{2}(?::\d{2})?)\s*[—\-]\s*(.*)$/)
+        if (tsMatch) {
+          const tsSeconds = parseTimestampToSeconds(tsMatch[1])
+          result.push(
+            <h2 key={`h2-${i}`}>
+              {tsSeconds !== null && (
+                <button
+                  className="ts"
+                  type="button"
+                  onClick={() => onSeek(tsSeconds)}
+                  title={`Seek video to ${tsMatch[1]}`}
+                >
+                  ▶ {tsMatch[1]}
+                </button>
+              )}
+              <span>{renderInline(tsMatch[2], assetMap, onSeek, `h2-${i}`)}</span>
+            </h2>,
+          )
+        } else {
+          result.push(
+            <h2 key={`h2-${i}`}>
+              {renderInline(headingText, assetMap, onSeek, `h2-${i}`)}
+            </h2>,
+          )
+        }
+        i++
+        continue
+      }
+
+      if (trimmed.startsWith('### ') || trimmed === '###') {
+        result.push(
+          <h3 key={`h3-${i}`}>
+            {renderInline(trimmed.slice(4).trim(), assetMap, onSeek, `h3-${i}`)}
+          </h3>,
+        )
+        i++
+        continue
+      }
+
+      if (trimmed.startsWith('#### ') || trimmed === '####') {
+        result.push(
+          <h4 key={`h4-${i}`}>
+            {renderInline(trimmed.slice(5).trim(), assetMap, onSeek, `h4-${i}`)}
+          </h4>,
+        )
+        i++
+        continue
+      }
+
+      // 3. Horizontal Rule
+      if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
+        result.push(<hr key={`hr-${i}`} className="doc-hr" />)
+        i++
+        continue
+      }
+
+      // 4. Standalone Image: ![alt](src)
+      const imgMatch = trimmed.match(/^!\[(.*?)\]\((.*?)\)$/)
+      if (imgMatch) {
+        const alt = imgMatch[1]
+        const src = resolveImageSrc(imgMatch[2])
+        result.push(
+          <figure key={`fig-${i}`} className="doc-figure">
+            <img
+              src={src}
+              alt={alt}
+              className="doc-figure-img"
+              onClick={() => onImageClick?.(src)}
+              title="Click to enlarge"
+            />
+            {alt && <figcaption className="doc-figcaption">{alt}</figcaption>}
+          </figure>,
+        )
+        i++
+        continue
+      }
+
+      // 5. Blockquote: > text
+      if (trimmed.startsWith('>')) {
+        const quoteLines: string[] = []
+        while (i < lines.length && lines[i].trim().startsWith('>')) {
+          quoteLines.push(lines[i].trim().replace(/^>\s*/, ''))
+          i++
+        }
+        result.push(
+          <blockquote key={`bq-${i}`}>
+            <p>{renderInline(quoteLines.join(' '), assetMap, onSeek, `bq-${i}`)}</p>
+          </blockquote>,
+        )
+        continue
+      }
+
+      // 6. Tables
+      if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+        const tableLines: string[] = []
+        while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
+          tableLines.push(lines[i].trim())
+          i++
+        }
+        if (tableLines.length >= 2) {
+          const parseRow = (r: string) =>
+            r
+              .slice(1, -1)
+              .split('|')
+              .map((c) => c.trim())
+          const headerCells = parseRow(tableLines[0])
+          const isDivider = (r: string) => parseRow(r).every((c) => /^:?-+:?$/.test(c))
+          const hasDivider = isDivider(tableLines[1])
+          const bodyRows = (hasDivider ? tableLines.slice(2) : tableLines.slice(1)).map(parseRow)
+
+          result.push(
+            <div key={`tbl-${i}`} className="doc-table-wrap">
+              <table className="doc-table">
+                <thead>
+                  <tr>
+                    {headerCells.map((h, cIdx) => (
+                      <th key={cIdx}>{renderInline(h, assetMap, onSeek, `th-${i}-${cIdx}`)}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {bodyRows.map((row, rIdx) => (
+                    <tr key={rIdx}>
+                      {row.map((cell, cIdx) => (
+                        <td key={cIdx}>{renderInline(cell, assetMap, onSeek, `td-${i}-${rIdx}-${cIdx}`)}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>,
+          )
+          continue
+        }
+      }
+
+      // 7. Lists (Bullet, Task, Numbered)
+      const isBullet = trimmed.startsWith('- ') || trimmed.startsWith('* ')
+      const isNumbered = /^\d+\.\s/.test(trimmed)
+      if (isBullet || isNumbered) {
+        const listItems: Array<{ isTask?: boolean; checked?: boolean; text: string }> = []
+        while (i < lines.length) {
+          const curTrimmed = lines[i].trim()
+          if (!curTrimmed) break
+          if (curTrimmed.startsWith('- ') || curTrimmed.startsWith('* ')) {
+            const itemContent = curTrimmed.slice(2).trim()
+            const taskMatch = itemContent.match(/^\[([ xX])\]\s*(.*)$/)
+            if (taskMatch) {
+              listItems.push({
+                isTask: true,
+                checked: taskMatch[1].toLowerCase() === 'x',
+                text: taskMatch[2],
+              })
+            } else {
+              listItems.push({ text: itemContent })
+            }
+            i++
+          } else if (/^\d+\.\s/.test(curTrimmed)) {
+            const itemContent = curTrimmed.replace(/^\d+\.\s*/, '').trim()
+            listItems.push({ text: itemContent })
+            i++
+          } else {
+            break
+          }
+        }
+
+        if (isNumbered) {
+          result.push(
+            <ol key={`ol-${i}`}>
+              {listItems.map((item, idx) => (
+                <li key={idx}>{renderInline(item.text, assetMap, onSeek, `li-${i}-${idx}`)}</li>
+              ))}
+            </ol>,
+          )
+        } else {
+          result.push(
+            <ul key={`ul-${i}`}>
+              {listItems.map((item, idx) => (
+                <li key={idx} className={item.isTask ? 'task-item' : ''}>
+                  {item.isTask && (
+                    <input
+                      type="checkbox"
+                      checked={item.checked}
+                      readOnly
+                      style={{ marginRight: 6, accentColor: 'var(--ink)' }}
+                    />
+                  )}
+                  {renderInline(item.text, assetMap, onSeek, `li-${i}-${idx}`)}
+                </li>
+              ))}
+            </ul>,
+          )
+        }
+        continue
+      }
+
+      // 8. Paragraph
+      const paraLines: string[] = []
+      while (
+        i < lines.length &&
+        lines[i].trim() &&
+        !lines[i].trim().startsWith('#') &&
+        !lines[i].trim().startsWith('```') &&
+        !lines[i].trim().startsWith('>') &&
+        !lines[i].trim().startsWith('- ') &&
+        !lines[i].trim().startsWith('* ') &&
+        !/^\d+\.\s/.test(lines[i].trim()) &&
+        !(lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) &&
+        lines[i].trim() !== '---' &&
+        lines[i].trim() !== '***' &&
+        !lines[i].trim().match(/^!\[(.*?)\]\((.*?)\)$/)
+      ) {
+        paraLines.push(lines[i].trim())
+        i++
+      }
+
+      if (paraLines.length > 0) {
+        result.push(
+          <p key={`p-${i}`} className="doc-p">
+            {renderInline(paraLines.join(' '), assetMap, onSeek, `p-${i}`)}
+          </p>,
+        )
+      }
+    }
+
+    return result
+  }, [markdown, assetMap, onSeek, onImageClick])
+
+  return <article className="doc-preview-body">{blocks}</article>
+}
+
 export default function Dashboard() {
   // Theme state
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -133,10 +894,15 @@ export default function Dashboard() {
   const [groups, setGroups] = useState<NoteGroup[]>([])
   const [captures, setCaptures] = useState<VideoCapture[]>([])
   const [notes, setNotes] = useState<GeneratedNote[]>([])
+  const [allNotes, setAllNotes] = useState<GeneratedNote[]>([])
+  const [allCaptures, setAllCaptures] = useState<SearchableCapture[]>([])
 
-  // Filters & Tabs
+  // Filters, Search & Tabs
   const [activeGroupId, setActiveGroupId] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState('')
+  const [timelineSearch, setTimelineSearch] = useState('')
+  const [highlightTimestamp, setHighlightTimestamp] = useState<number | null>(null)
+  const [expandedMatches, setExpandedMatches] = useState<Record<string, boolean>>({})
   const [activeTab, setActiveTab] = useState<'tl' | 'doc' | 'sum' | 'ask'>('tl')
 
   // Ask AI / Note Enrichment State
@@ -161,6 +927,34 @@ export default function Dashboard() {
   // Document Editor State
   const [docCustomText, setDocCustomText] = useState('')
   const [docEdited, setDocEdited] = useState(false)
+  const [docViewMode, setDocViewMode] = useState<'preview' | 'code'>('preview')
+  const [previewZoomSrc, setPreviewZoomSrc] = useState<string | null>(null)
+
+  const docLineCount = useMemo(() => (docCustomText ? docCustomText.split('\n').length : 0), [docCustomText])
+  const docByteSize = useMemo(() => {
+    if (!docCustomText) return '0 B'
+    const bytes = new Blob([docCustomText]).size
+    if (bytes < 1024) return `${bytes} B`
+    return `${(bytes / 1024).toFixed(1)} KB`
+  }, [docCustomText])
+
+  // Summary Viewer / Editor State
+  const [summaryCustomText, setSummaryCustomText] = useState('')
+  const [summaryEdited, setSummaryEdited] = useState(false)
+  const [summaryViewMode, setSummaryViewMode] = useState<'preview' | 'code'>('preview')
+  const prevSummarySessionIdRef = useRef<string | null>(null)
+
+  const summaryLineCount = useMemo(() => (summaryCustomText ? summaryCustomText.split('\n').length : 0), [summaryCustomText])
+  const summaryByteSize = useMemo(() => {
+    if (!summaryCustomText) return '0 B'
+    const bytes = new Blob([summaryCustomText]).size
+    if (bytes < 1024) return `${bytes} B`
+    return `${(bytes / 1024).toFixed(1)} KB`
+  }, [summaryCustomText])
+
+  // Ask AI Proposals State (Preview vs Code per proposal)
+  const [proposalViewModes, setProposalViewModes] = useState<Record<string, 'preview' | 'code'>>({})
+  const [proposalCustomText, setProposalCustomText] = useState<Record<string, string>>({})
 
   // Alert & Toast
   const [serviceAlert, setServiceAlert] = useState<string | null>(null)
@@ -247,12 +1041,88 @@ export default function Dashboard() {
   const currentTimestamp = activeSession?.id === selectedSession?.id && currentVideo ? currentVideo.timestampSeconds : maxCaptureTs
   const effectiveDuration = Math.max(currentDuration, currentTimestamp, 60)
 
+  // Capture Quality & Session Health Metrics
+  const lastSuccessfulFrame = useMemo(() => {
+    return (
+      captures
+        .filter((c) => c.screenshotDataUrl && c.processingStatus !== 'failed')
+        .sort((a, b) => b.capturedAt - a.capturedAt)[0] ?? null
+    )
+  }, [captures])
+
+  const pendingCaptures = useMemo(() => {
+    return captures.filter((c) => c.processingStatus === 'pending' || c.processingStatus === 'processing')
+  }, [captures])
+
+  const failedCaptures = useMemo(() => {
+    return captures.filter((c) => c.processingStatus === 'failed')
+  }, [captures])
+
+  const lastCapture = useMemo(() => {
+    return captures.length > 0 ? captures[captures.length - 1] : null
+  }, [captures])
+
+  const [previewThumbnailOpen, setPreviewThumbnailOpen] = useState(false)
+  const [monitorExpanded, setMonitorExpanded] = useState(true)
+
+  // Diagnostics & Silent Stoppage Warnings
+  const timeSinceLastCaptureSec = lastCapture ? Math.floor((Date.now() - lastCapture.capturedAt) / 1000) : 0
+  const isStalled = Boolean(
+    selectedSession &&
+      selectedSession.status === 'active' &&
+      currentVideo?.isPlaying &&
+      captures.length > 0 &&
+      timeSinceLastCaptureSec > Math.max(45, (selectedSession.captureIntervalSeconds || 30) * 2.2),
+  )
+
+  const isUnsupportedVideo = Boolean(
+    selectedSession &&
+      selectedSession.status === 'active' &&
+      (!currentVideo || (currentVideo.videoCount === 0 && currentVideo.durationSeconds === 0)),
+  )
+
+  const isCanvasRestricted = Boolean(currentVideo && currentVideo.canExtractFrame === false)
+  const isAdPlaying = Boolean(currentVideo?.isAd)
+  const isPausedWhilePlaying = Boolean(
+    selectedSession && selectedSession.status === 'paused' && currentVideo?.isPlaying,
+  )
+
+  const handleRetryAllFailed = async () => {
+    if (failedCaptures.length === 0) return
+    showToast(`Retrying ${failedCaptures.length} failed ${failedCaptures.length === 1 ? 'capture' : 'captures'}…`)
+    for (const cap of failedCaptures) {
+      try {
+        await sendExtensionMessage({ type: 'CAPTURE_RETRY', captureId: cap.id })
+      } catch (err) {
+        console.warn('Retry error:', err)
+      }
+    }
+    if (selectedSessionIdRef.current) await refresh(selectedSessionIdRef.current)
+  }
+
   // Keep docCustomText updated when session/notes change unless manually edited
   useEffect(() => {
     if (selectedSession && !docEdited) {
       setDocCustomText(compileMarkdown(selectedSession, notes, captures))
     }
   }, [selectedSession, notes, captures, docEdited])
+
+  // Keep summaryCustomText updated when session/summary changes unless manually edited
+  useEffect(() => {
+    if (selectedSession) {
+      if (prevSummarySessionIdRef.current !== selectedSession.id) {
+        setSummaryCustomText(selectedSession.summary || '')
+        setSummaryEdited(false)
+        prevSummarySessionIdRef.current = selectedSession.id
+      } else if (!summaryEdited) {
+        setSummaryCustomText(selectedSession.summary || '')
+      }
+    } else {
+      setSummaryCustomText('')
+      setSummaryEdited(false)
+      prevSummarySessionIdRef.current = null
+    }
+  }, [selectedSession, summaryEdited])
 
   const handleRetryCapture = async (captureId: string) => {
     try {
@@ -288,18 +1158,22 @@ export default function Dashboard() {
     }
   }, [])
 
-  // Reload sessions & groups
+  // Reload sessions, groups & search index
   const refresh = useCallback(
     async (targetId?: string) => {
       void checkBackendStatus()
-      const [nextState, allSessions, allGroups] = await Promise.all([
+      const [nextState, allSessions, allGroups, loadedNotes, loadedCaptures] = await Promise.all([
         sendExtensionMessage({ type: 'UI_GET_STATE' }).catch(() => ({ success: true, session: null, video: null } as ExtensionResponse)),
         listSessions().catch(() => [] as LearningSession[]),
         listGroups().catch(() => [] as NoteGroup[]),
+        listAllNotes().catch(() => [] as GeneratedNote[]),
+        listSearchableCaptures().catch(() => [] as SearchableCapture[]),
       ])
 
       setState(nextState)
       setGroups(allGroups)
+      setAllNotes(loadedNotes)
+      setAllCaptures(loadedCaptures)
 
       const mergedSessions = nextState.session && !allSessions.some((s) => s.id === nextState.session?.id)
         ? [nextState.session, ...allSessions]
@@ -345,7 +1219,7 @@ export default function Dashboard() {
   }, [refresh])
 
   // Navigation handlers
-  const openNote = (id: string) => {
+  const openNote = (id: string, initialTimestamp?: number) => {
     selectedSessionIdRef.current = id
     setSelectedSessionId(id)
     setView('note')
@@ -353,6 +1227,10 @@ export default function Dashboard() {
     setNoteCardMenuId(null)
     setDocEdited(false)
     void refresh(id)
+    if (initialTimestamp !== undefined && initialTimestamp >= 0) {
+      setHighlightTimestamp(initialTimestamp)
+      void handleSeek(initialTimestamp, id)
+    }
   }
 
   const goHome = () => {
@@ -360,6 +1238,7 @@ export default function Dashboard() {
     setSelectedSessionId('home')
     setView('home')
     setNoteCardMenuId(null)
+    setHighlightTimestamp(null)
     void refresh('home')
   }
 
@@ -614,12 +1493,13 @@ export default function Dashboard() {
     showToast('Session finished')
   }
 
-  const handleSeek = (ts: number) => {
-    if (!selectedSession) return
+  const handleSeek = (ts: number, targetSessionId?: string) => {
+    const sId = targetSessionId || selectedSession?.id
+    if (!sId) return
     try {
       void sendExtensionMessage({
         type: 'SEEK_VIDEO',
-        sessionId: selectedSession.id,
+        sessionId: sId,
         timestampSeconds: ts,
       })
       showToast(`Jumped to ${formatTimestamp(ts)}`)
@@ -711,6 +1591,47 @@ export default function Dashboard() {
     }
   }
 
+  // Summary & Proposal Markdown Helpers
+  const formatProposalMarkdown = (p: AskAiProposal): string => {
+    const points = (p.keyPoints || []).filter(Boolean).map((pt) => `- ${pt}`).join('\n')
+    return `### ${p.title}\n\n${p.explanation}${points ? `\n\n${points}` : ''}`
+  }
+
+  const parseProposalMarkdown = (text: string, fallback: AskAiProposal): { title: string; explanation: string; keyPoints: string[] } => {
+    const trimmed = text.trim()
+    if (!trimmed) return { title: fallback.title, explanation: fallback.explanation, keyPoints: fallback.keyPoints }
+    const lines = trimmed.split('\n')
+    let title = fallback.title
+    let startIndex = 0
+
+    const firstLine = lines[0].trim()
+    const headingMatch = firstLine.match(/^#+\s*(.*)$/)
+    if (headingMatch && headingMatch[1].trim()) {
+      title = headingMatch[1].trim()
+      startIndex = 1
+    }
+
+    const expLines: string[] = []
+    const points: string[] = []
+
+    for (let i = startIndex; i < lines.length; i++) {
+      const l = lines[i]
+      const bulletMatch = l.trim().match(/^[-*]\s+(.*)$/)
+      if (bulletMatch) {
+        points.push(bulletMatch[1].trim())
+      } else {
+        expLines.push(l)
+      }
+    }
+
+    const explanation = expLines.join('\n').trim() || fallback.explanation
+    return {
+      title,
+      explanation,
+      keyPoints: points.length > 0 ? points : fallback.keyPoints,
+    }
+  }
+
   // Generate Summary
   const handleGenerateSummary = async () => {
     if (!selectedSession || notes.length === 0) return
@@ -731,12 +1652,79 @@ export default function Dashboard() {
         summaryNoteCount: notes.length,
       }
       await saveSession(updated)
+      setSummaryCustomText(res.formattedMarkdown)
+      setSummaryEdited(false)
       await refresh(selectedSession.id)
       showToast('Review guide generated')
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Could not generate summary')
     } finally {
       setIsSummarizing(false)
+    }
+  }
+
+  const handleCopyRichSummary = async () => {
+    if (!selectedSession) {
+      showToast('No session selected')
+      return
+    }
+    const text = summaryCustomText || selectedSession.summary || ''
+    if (!text) {
+      showToast('No summary to copy')
+      return
+    }
+    try {
+      const html = markdownToHtml(text, captures)
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && navigator.clipboard.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/plain': new Blob([text], { type: 'text/plain' }),
+            'text/html': new Blob([html], { type: 'text/html' }),
+          }),
+        ])
+        showToast('Summary copied with images (paste in Notion/Docs)')
+        return
+      }
+      await navigator.clipboard.writeText(text)
+      showToast('Summary copied')
+    } catch {
+      try {
+        await navigator.clipboard.writeText(text)
+        showToast('Summary copied')
+      } catch {
+        showToast('Could not copy summary')
+      }
+    }
+  }
+
+  const handleCopyPlainSummary = async () => {
+    const text = summaryCustomText || selectedSession?.summary || ''
+    if (!text) {
+      showToast('No summary to copy')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+      showToast('Summary markdown copied')
+    } catch {
+      showToast('Could not copy summary')
+    }
+  }
+
+  const handleSaveSummaryEdits = async () => {
+    if (!selectedSession) return
+    try {
+      const updated: LearningSession = {
+        ...selectedSession,
+        summary: summaryCustomText,
+        summaryGeneratedAt: Date.now(),
+      }
+      await saveSession(updated)
+      setSummaryEdited(false)
+      await refresh(selectedSession.id)
+      showToast('Summary edits saved')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Could not save summary')
     }
   }
 
@@ -793,13 +1781,18 @@ export default function Dashboard() {
     const proposal = askProposals.find((p) => p.id === proposalId)
     if (!proposal || !selectedSession) return
 
+    const customText = proposalCustomText[proposalId]
+    const parsed = customText
+      ? parseProposalMarkdown(customText, proposal)
+      : { title: proposal.title, explanation: proposal.explanation, keyPoints: proposal.keyPoints }
+
     const now = Date.now()
     const newNote: GeneratedNote = {
       id: crypto.randomUUID(),
       sessionId: selectedSession.id,
-      title: proposal.title,
-      explanation: proposal.explanation,
-      keyPoints: proposal.keyPoints,
+      title: parsed.title,
+      explanation: parsed.explanation,
+      keyPoints: parsed.keyPoints,
       startTimestampSeconds: proposal.timestampSeconds,
       createdAt: now,
       updatedAt: now,
@@ -808,7 +1801,7 @@ export default function Dashboard() {
 
     await storageSaveNote(newNote)
     setAskProposals((prev) =>
-      prev.map((p) => (p.id === proposalId ? { ...p, added: true } : p)),
+      prev.map((p) => (p.id === proposalId ? { ...p, added: true, title: parsed.title, explanation: parsed.explanation, keyPoints: parsed.keyPoints } : p)),
     )
 
     const updatedNotes = [...notes, newNote].sort(
@@ -833,6 +1826,8 @@ export default function Dashboard() {
           summaryNoteCount: updatedNotes.length,
         }
         await saveSession(updatedSession)
+        setSummaryCustomText(res.formattedMarkdown)
+        setSummaryEdited(false)
         await refresh(selectedSession.id)
         showToast('Approved! Added to timeline, document, and review summary.')
         return
@@ -847,6 +1842,16 @@ export default function Dashboard() {
 
   const handleDismissProposal = (proposalId: string) => {
     setAskProposals((prev) => prev.filter((p) => p.id !== proposalId))
+    setProposalViewModes((prev) => {
+      const next = { ...prev }
+      delete next[proposalId]
+      return next
+    })
+    setProposalCustomText((prev) => {
+      const next = { ...prev }
+      delete next[proposalId]
+      return next
+    })
   }
 
   // Export & Copy
@@ -880,7 +1885,45 @@ export default function Dashboard() {
     }
   }
 
-  const handleCopyDoc = async () => {
+  const handleCopyRichDoc = async () => {
+    if (!selectedSession) {
+      showToast('Open a note to copy document')
+      return
+    }
+    try {
+      const markdown = docCustomText || compileMarkdown(selectedSession, notes, captures)
+      const html = docEdited
+        ? markdownToHtml(docCustomText, captures)
+        : compileRichHtml(selectedSession, notes, captures)
+
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && navigator.clipboard.write) {
+        const textBlob = new Blob([markdown], { type: 'text/plain' })
+        const htmlBlob = new Blob([html], { type: 'text/html' })
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/plain': textBlob,
+            'text/html': htmlBlob,
+          }),
+        ])
+        showToast('Copied with images! Paste in Notion, Docs, or OneNote')
+        return
+      }
+
+      await navigator.clipboard.writeText(markdown)
+      showToast('Copied markdown (browser did not support rich paste)')
+    } catch (err) {
+      console.warn('Rich copy fallback to plain text:', err)
+      try {
+        const markdown = docCustomText || compileMarkdown(selectedSession, notes, captures)
+        await navigator.clipboard.writeText(markdown)
+        showToast('Copied markdown text (images omitted)')
+      } catch {
+        showToast('Could not copy document')
+      }
+    }
+  }
+
+  const handleCopyPlainMarkdown = async () => {
     if (!selectedSession) {
       showToast('Open a note to copy document')
       return
@@ -888,10 +1931,52 @@ export default function Dashboard() {
     try {
       const markdown = docCustomText || compileMarkdown(selectedSession, notes, captures)
       await navigator.clipboard.writeText(markdown)
-      showToast('Document copied to clipboard')
+      showToast('Markdown copied to clipboard')
     } catch {
-      showToast('Could not copy document')
+      showToast('Could not copy markdown')
     }
+  }
+
+  const handleCopySingleNote = async (note: GeneratedNote, talkText?: string, screenshotUrl?: string) => {
+    const keyPointsText =
+      note.keyPoints.length > 0 ? `\n\nKey points:\n${note.keyPoints.map((p) => `- ${p}`).join('\n')}` : ''
+    const quoteText = talkText ? `\n\nOriginal talk: "${talkText}"` : ''
+    const plainText = `${formatTimestamp(note.startTimestampSeconds)} - ${note.title}\n\n${note.explanation}${keyPointsText}${quoteText}`
+
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #1e293b;">
+        <h3 style="font-size: 18px; margin: 0 0 8px 0; color: #0f172a;">${formatTimestamp(note.startTimestampSeconds)} — ${escapeHtml(note.title)}</h3>
+        <p style="margin: 0 0 10px 0; color: #334155;">${escapeHtml(note.explanation)}</p>
+        ${note.keyPoints.length > 0 ? `
+          <h4 style="font-size: 14px; margin: 10px 0 4px 0; color: #475569;">Key points</h4>
+          <ul style="margin: 4px 0 10px 20px; padding: 0;">
+            ${note.keyPoints.map((p) => `<li style="margin-bottom: 4px;">${formatInline(p)}</li>`).join('')}
+          </ul>
+        ` : ''}
+        ${quoteText ? `<blockquote style="border-left: 3px solid #cbd5e1; margin: 8px 0; padding-left: 10px; color: #64748b;"><em>${escapeHtml(talkText!)}</em></blockquote>` : ''}
+        ${screenshotUrl ? `
+          <div style="margin: 12px 0;">
+            <img src="${screenshotUrl}" alt="Video frame at ${formatTimestamp(note.startTimestampSeconds)}" style="max-width: 100%; border-radius: 6px; border: 1px solid #e2e8f0; display: block;" />
+          </div>
+        ` : ''}
+      </div>
+    `
+
+    try {
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard && navigator.clipboard.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/plain': new Blob([plainText], { type: 'text/plain' }),
+            'text/html': new Blob([html], { type: 'text/html' }),
+          }),
+        ])
+        showToast(screenshotUrl ? 'Note copied with image' : 'Note copied to clipboard')
+        return
+      }
+    } catch {}
+
+    await navigator.clipboard.writeText(plainText)
+    showToast('Note copied to clipboard')
   }
 
   // AI Settings Modal actions
@@ -948,20 +2033,177 @@ export default function Dashboard() {
     showToast(`Using ${model.replace('models/', '')}`)
   }
 
+  // Full-Text Search across Notes, Explanations, Keypoints, Transcripts, Slides & Summaries
+  const searchMatchesBySession = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return new Map<string, SessionSearchMatch[]>()
+
+    const map = new Map<string, SessionSearchMatch[]>()
+
+    // 1. Search in notes (title, explanation, keyPoints)
+    for (const note of allNotes) {
+      const matches: SessionSearchMatch[] = []
+      if (note.title && note.title.toLowerCase().includes(q)) {
+        matches.push({
+          id: `${note.id}-title`,
+          sessionId: note.sessionId,
+          timestampSeconds: note.startTimestampSeconds,
+          kind: 'note-title',
+          snippet: note.title,
+          noteId: note.id,
+        })
+      }
+      if (note.explanation && note.explanation.toLowerCase().includes(q)) {
+        matches.push({
+          id: `${note.id}-exp`,
+          sessionId: note.sessionId,
+          timestampSeconds: note.startTimestampSeconds,
+          kind: 'explanation',
+          snippet: extractSnippet(note.explanation, q),
+          noteId: note.id,
+        })
+      }
+      if (Array.isArray(note.keyPoints)) {
+        for (let i = 0; i < note.keyPoints.length; i++) {
+          const pt = note.keyPoints[i]
+          if (pt && pt.toLowerCase().includes(q)) {
+            matches.push({
+              id: `${note.id}-kp-${i}`,
+              sessionId: note.sessionId,
+              timestampSeconds: note.startTimestampSeconds,
+              kind: 'keypoint',
+              snippet: extractSnippet(pt, q),
+              noteId: note.id,
+            })
+          }
+        }
+      }
+
+      if (matches.length > 0) {
+        const existing = map.get(note.sessionId) ?? []
+        existing.push(...matches)
+        map.set(note.sessionId, existing)
+      }
+    }
+
+    // 2. Search in captures (spoken audio transcripts and slide OCR text)
+    for (const cap of allCaptures) {
+      if (cap.transcriptText && cap.transcriptText.toLowerCase().includes(q)) {
+        const isSlide = cap.transcriptText.startsWith('[Visual slide')
+        const existing = map.get(cap.sessionId) ?? []
+        // Avoid duplicate match at exact same timestamp with same text
+        const hasDuplicate = existing.some(
+          (m) => Math.abs(m.timestampSeconds - cap.timestampSeconds) < 2 && m.snippet.toLowerCase() === cap.transcriptText.toLowerCase()
+        )
+        if (!hasDuplicate) {
+          existing.push({
+            id: `${cap.id}-cap`,
+            sessionId: cap.sessionId,
+            timestampSeconds: cap.timestampSeconds,
+            kind: isSlide ? 'slide' : 'transcript',
+            snippet: extractSnippet(cap.transcriptText, q),
+          })
+          map.set(cap.sessionId, existing)
+        }
+      }
+    }
+
+    // 3. Search in session summaries
+    for (const s of sessions) {
+      if (s.summary && s.summary.toLowerCase().includes(q)) {
+        const existing = map.get(s.id) ?? []
+        existing.push({
+          id: `${s.id}-sum`,
+          sessionId: s.id,
+          timestampSeconds: 0,
+          kind: 'summary',
+          snippet: extractSnippet(s.summary, q),
+        })
+        map.set(s.id, existing)
+      }
+    }
+
+    // Sort matches in each session by timestamp
+    for (const [sId, list] of map.entries()) {
+      list.sort((a, b) => a.timestampSeconds - b.timestampSeconds)
+      map.set(sId, list)
+    }
+
+    return map
+  }, [allNotes, allCaptures, sessions, searchQuery])
+
   // Filtered notes list on home
   const filteredSessions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
-    return sessions.filter((s) => {
-      const matchesGroup =
-        activeGroupId === 'all'
-          ? true
-          : activeGroupId === 'none'
-          ? (!s.groupId || !groups.some((g) => g.id === s.groupId))
-          : s.groupId === activeGroupId
-      const matchesSearch = !q || s.videoTitle.toLowerCase().includes(q) || (s.platformName || '').toLowerCase().includes(q)
-      return matchesGroup && matchesSearch
+    return sessions
+      .filter((s) => {
+        const matchesGroup =
+          activeGroupId === 'all'
+            ? true
+            : activeGroupId === 'none'
+            ? (!s.groupId || !groups.some((g) => g.id === s.groupId))
+            : s.groupId === activeGroupId
+
+        if (!matchesGroup) return false
+        if (!q) return true
+
+        const matchesTitle = s.videoTitle.toLowerCase().includes(q) || (s.platformName || '').toLowerCase().includes(q)
+        const matchesNotes = (searchMatchesBySession.get(s.id)?.length ?? 0) > 0
+
+        return matchesTitle || matchesNotes
+      })
+      .sort((a, b) => {
+        if (!q) return b.startedAt - a.startedAt
+        const aMatches = searchMatchesBySession.get(a.id)?.length ?? 0
+        const bMatches = searchMatchesBySession.get(b.id)?.length ?? 0
+        const aTitle = a.videoTitle.toLowerCase().includes(q) ? 10 : 0
+        const bTitle = b.videoTitle.toLowerCase().includes(q) ? 10 : 0
+        return bMatches + bTitle - (aMatches + aTitle)
+      })
+  }, [sessions, activeGroupId, searchQuery, groups, searchMatchesBySession])
+
+  const totalMatchCount = useMemo(() => {
+    if (!searchQuery.trim()) return 0
+    let count = 0
+    for (const s of filteredSessions) {
+      count += searchMatchesBySession.get(s.id)?.length ?? 0
+    }
+    return count
+  }, [searchQuery, filteredSessions, searchMatchesBySession])
+
+  // Filtered notes inside active session timeline
+  const filteredTimelineNotes = useMemo(() => {
+    const q = timelineSearch.trim().toLowerCase()
+    if (!q) return notes
+    return notes.filter((note) => {
+      if (note.title && note.title.toLowerCase().includes(q)) return true
+      if (note.explanation && note.explanation.toLowerCase().includes(q)) return true
+      if (note.keyPoints?.some((pt) => pt && pt.toLowerCase().includes(q))) return true
+      const matchingCapture = captures.find((c) => c.id === note.captureId || Math.abs(c.timestampSeconds - note.startTimestampSeconds) <= 10)
+      if (matchingCapture?.transcriptText && matchingCapture.transcriptText.toLowerCase().includes(q)) return true
+      return false
     })
-  }, [sessions, activeGroupId, searchQuery, groups])
+  }, [notes, captures, timelineSearch])
+
+  // Scroll to highlighted note on click-through
+  useEffect(() => {
+    if (highlightTimestamp === null || view !== 'note' || notes.length === 0) return
+    const matchingNote =
+      notes.find((n) => Math.abs(n.startTimestampSeconds - highlightTimestamp) < 15) ??
+      notes.reduce((closest, curr) =>
+        Math.abs(curr.startTimestampSeconds - highlightTimestamp) < Math.abs(closest.startTimestampSeconds - highlightTimestamp)
+          ? curr
+          : closest
+      )
+    if (matchingNote) {
+      const el = document.getElementById(`note-${matchingNote.id}`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+    }
+    const timer = setTimeout(() => setHighlightTimestamp(null), 3000)
+    return () => clearTimeout(timer)
+  }, [highlightTimestamp, view, notes])
 
   // Count per group
   const getGroupCount = (gid: string) => {
@@ -1046,7 +2288,8 @@ export default function Dashboard() {
             {moreMenuOpen && (
               <div className="pop" onClick={() => setMoreMenuOpen(false)}>
                 <button onClick={handleExportZip}>Export ZIP</button>
-                <button onClick={handleCopyDoc}>Copy document</button>
+                <button onClick={handleCopyRichDoc}>Copy with images</button>
+                <button onClick={handleCopyPlainMarkdown}>Copy markdown</button>
                 <button onClick={toggleMotion}>
                   {motionPaused ? '▶ Resume background motion' : '⏸ Pause background motion'}
                 </button>
@@ -1150,7 +2393,7 @@ export default function Dashboard() {
             <input
               className="search"
               type="search"
-              placeholder="Search notes"
+              placeholder="Search notes, explanations, transcripts, slides…"
               aria-label="Search notes"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -1240,12 +2483,23 @@ export default function Dashboard() {
               </div>
             )}
 
+            {/* Search Summary Bar */}
+            {searchQuery.trim() && (
+              <div className="search-summary-bar">
+                <span>
+                  Found <b>{totalMatchCount}</b> {totalMatchCount === 1 ? 'matching moment' : 'matching moments'} across <b>{filteredSessions.length}</b> {filteredSessions.length === 1 ? 'lecture' : 'lectures'}
+                </span>
+                <button className="lk" onClick={() => setSearchQuery('')}>Clear search</button>
+              </div>
+            )}
+
             {/* Notes List */}
             <div id="list">
               {filteredSessions.map((session) => {
                 const groupName = session.groupId ? groups.find((g) => g.id === session.groupId)?.name : null
                 const sessionDate = new Date(session.startedAt).toLocaleDateString('en-US')
                 const isCardMenuOpen = noteCardMenuId === session.id
+                const matchesForSession = searchMatchesBySession.get(session.id) ?? []
                 return (
                   <article
                     key={session.id}
@@ -1253,9 +2507,13 @@ export default function Dashboard() {
                     style={isCardMenuOpen ? { zIndex: 60 } : undefined}
                   >
                     <button className="nc-main" onClick={() => openNote(session.id)}>
-                      <h3>{session.videoTitle}</h3>
+                      <h3>
+                        <HighlightSnippet text={session.videoTitle} query={searchQuery} />
+                      </h3>
                       <div className="sub">
-                        <span>{session.platformName || 'Web video'}</span>
+                        <span>
+                          <HighlightSnippet text={session.platformName || 'Web video'} query={searchQuery} />
+                        </span>
                         <span>{sessionDate}</span>
                         {groupName && <span className="gb">{groupName}</span>}
                         {session.status === 'completed' ? (
@@ -1286,6 +2544,54 @@ export default function Dashboard() {
                         <circle cx="19" cy="12" r="1.2" />
                       </svg>
                     </button>
+
+                    {/* Matching Moments Snippets */}
+                    {searchQuery.trim() && matchesForSession.length > 0 && (
+                      <div className="nc-matches">
+                        <div className="nc-matches-head">
+                          <span>Matching moments in notes & video</span>
+                          <span>{matchesForSession.length}</span>
+                        </div>
+                        <div className="nc-matches-list">
+                          {(expandedMatches[session.id] ? matchesForSession : matchesForSession.slice(0, 3)).map((m) => (
+                            <div
+                              key={m.id}
+                              className="nc-match-item"
+                              onClick={() => openNote(session.id, m.timestampSeconds)}
+                              title={`Jump to ${formatTimestamp(m.timestampSeconds)} in ${session.videoTitle}`}
+                            >
+                              <button
+                                className="ts"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  openNote(session.id, m.timestampSeconds)
+                                }}
+                                title="Jump to this moment"
+                              >
+                                ▶ {formatTimestamp(m.timestampSeconds)}
+                              </button>
+                              <span className="nc-match-badge">{formatMatchKind(m.kind)}</span>
+                              <span className="nc-match-snippet">
+                                <HighlightSnippet text={m.snippet} query={searchQuery} />
+                              </span>
+                            </div>
+                          ))}
+                          {matchesForSession.length > 3 && (
+                            <button
+                              className="nc-match-more-btn"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setExpandedMatches((prev) => ({ ...prev, [session.id]: !prev[session.id] }))
+                              }}
+                            >
+                              {expandedMatches[session.id]
+                                ? 'Show fewer matches'
+                                : `+${matchesForSession.length - 3} more matching moments…`}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     {isCardMenuOpen && (
                       <div className="pop" onClick={(e) => e.stopPropagation()}>
@@ -1331,7 +2637,16 @@ export default function Dashboard() {
               {filteredSessions.length === 0 && (
                 <div className="empty">
                   {searchQuery ? (
-                    'No notes match your search.'
+                    <>
+                      <p>No notes, explanations, or transcripts match "<b>{searchQuery}</b>".</p>
+                      <button
+                        className="btn"
+                        style={{ marginTop: 12, minHeight: 34, fontSize: 12 }}
+                        onClick={() => setSearchQuery('')}
+                      >
+                        Clear search
+                      </button>
+                    </>
                   ) : currentGroupObj ? (
                     <>
                       No notes in "{currentGroupObj.name}" yet.
@@ -1522,7 +2837,7 @@ export default function Dashboard() {
                     </button>
 
                     <button
-                      className="btn pri"
+                      className="btn"
                       onClick={() => void handleCaptureNow()}
                     >
                       Capture
@@ -1546,6 +2861,204 @@ export default function Dashboard() {
                 <span>
                   <b>{notes.filter((n) => n.userEdited).length}</b> edited
                 </span>
+              </div>
+
+              {/* Capture Quality & Session Health Monitor */}
+              <div className="health-monitor">
+                <div className="health-monitor-header">
+                  <div className="health-status-badge">
+                    <span
+                      className={`health-dot ${
+                        isUnsupportedVideo || failedCaptures.length > 0
+                          ? 'dot-error'
+                          : isStalled || isCanvasRestricted
+                          ? 'dot-warning'
+                          : selectedSession.status === 'paused'
+                          ? 'dot-paused'
+                          : selectedSession.status === 'completed'
+                          ? 'dot-completed'
+                          : 'dot-healthy'
+                      }`}
+                    />
+                    <span className="health-status-title">
+                      {isUnsupportedVideo
+                        ? 'No video detected'
+                        : isStalled
+                        ? 'Capture stalled'
+                        : isCanvasRestricted
+                        ? 'Canvas restricted'
+                        : failedCaptures.length > 0
+                        ? `${failedCaptures.length} capture failed`
+                        : selectedSession.status === 'paused'
+                        ? 'Session paused'
+                        : selectedSession.status === 'completed'
+                        ? 'Session completed'
+                        : 'Capture active & healthy'}
+                    </span>
+                  </div>
+                  <button
+                    className="health-toggle-btn"
+                    onClick={() => setMonitorExpanded((prev) => !prev)}
+                    title={monitorExpanded ? 'Collapse health details' : 'Expand health details'}
+                  >
+                    {monitorExpanded ? 'Hide details' : 'Show health monitor'}
+                  </button>
+                </div>
+
+                {monitorExpanded && (
+                  <div className="health-grid">
+                    {/* Item 1: Last Frame */}
+                    <div className="health-item featured" title="Most recent frame captured from player">
+                      <div className="health-item-header">
+                        <span className="health-item-label">Last frame</span>
+                        {lastSuccessfulFrame?.screenshotDataUrl && (
+                          <span className="health-hint">Click to enlarge</span>
+                        )}
+                      </div>
+                      <div className="health-item-value">
+                        {lastSuccessfulFrame?.screenshotDataUrl ? (
+                          <div
+                            className="last-frame-wrap"
+                            onClick={() => setPreviewThumbnailOpen((p) => !p)}
+                            title="Click to preview captured frame"
+                          >
+                            <img
+                              src={lastSuccessfulFrame.screenshotDataUrl}
+                              alt="Last frame"
+                              className="last-frame-thumb"
+                            />
+                            <div className="last-frame-meta">
+                              <span className="last-frame-time">{formatTimestamp(lastSuccessfulFrame.timestampSeconds)}</span>
+                              <span className="health-sub">{formatTimeAgo(lastSuccessfulFrame.capturedAt)} ago</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="health-muted">None yet</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Item 2: Captions */}
+                    <div className="health-item" title="Subtitle or caption stream status">
+                      <div className="health-item-label">Captions</div>
+                      <div className="health-item-value">
+                        {currentVideo?.hasCaptions || captures.some((c) => c.transcriptText && !c.transcriptText.startsWith('[Visual slide')) ? (
+                          <span className="health-pill" title={currentVideo?.captionSource || 'Captions available'}>
+                            {currentVideo?.captionSource || 'Detected'}
+                          </span>
+                        ) : (
+                          <span className="health-pill muted" title="AI notes will be grounded visually on the slide frames">
+                            Visual only
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Item 3: Audio Status */}
+                    <div className="health-item" title="OpenAI Whisper tab audio capture">
+                      <div className="health-item-label">Tab audio</div>
+                      <div className="health-item-value">
+                        {selectedSession.captureAudio ? (
+                          <span className="health-pill">
+                            Whisper on
+                          </span>
+                        ) : (
+                          <span className="health-pill muted">
+                            Off
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Item 4: Pending AI */}
+                    <div className="health-item" title="AI note generation requests in flight">
+                      <div className="health-item-label">AI queue</div>
+                      <div className="health-item-value">
+                        {pendingCaptures.length > 0 ? (
+                          <span className="health-pill pending">
+                            <span className="pulsing-dot" /> {pendingCaptures.length} in flight
+                          </span>
+                        ) : (
+                          <span className="health-pill muted">
+                            Idle (0)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Item 5: Failed Captures */}
+                    <div className="health-item" title="Failed note generations">
+                      <div className="health-item-label">Failures</div>
+                      <div className="health-item-value">
+                        {failedCaptures.length > 0 ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span className="health-pill error">
+                              {failedCaptures.length} failed
+                            </span>
+                            <button
+                              className="health-mini-btn"
+                              onClick={() => void handleRetryAllFailed()}
+                              title="Retry all failed AI requests"
+                            >
+                              Retry all
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="health-pill muted">
+                            0 errors
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Popover Thumbnail Preview */}
+                {previewThumbnailOpen && lastSuccessfulFrame?.screenshotDataUrl && (
+                  <div className="frame-preview-popover" onClick={() => setPreviewThumbnailOpen(false)}>
+                    <div className="frame-preview-box" onClick={(e) => e.stopPropagation()}>
+                      <div className="frame-preview-head">
+                        <span>Frame at {formatTimestamp(lastSuccessfulFrame.timestampSeconds)}</span>
+                        <button className="health-mini-btn" onClick={() => setPreviewThumbnailOpen(false)}>✕</button>
+                      </div>
+                      <img src={lastSuccessfulFrame.screenshotDataUrl} alt="Frame preview" />
+                    </div>
+                  </div>
+                )}
+
+                {/* Proactive Warnings & Alerts */}
+                {isStalled && (
+                  <div className="health-alert" role="alert">
+                    <span><b>Capture stalled:</b> Video is playing at {formatTimestamp(currentTimestamp)}, but no new frame was captured in {timeSinceLastCaptureSec}s.</span>
+                    <button className="health-alert-btn" onClick={() => void handleCaptureNow()}>Capture now</button>
+                  </div>
+                )}
+
+                {isUnsupportedVideo && (
+                  <div className="health-alert" role="alert">
+                    <span><b>No video player detected:</b> Make sure the lecture video tab is active and playing.</span>
+                    <button className="health-alert-btn" onClick={() => void connectCurrentPage()}>Connect page</button>
+                  </div>
+                )}
+
+                {isCanvasRestricted && (
+                  <div className="health-alert" role="alert">
+                    <span><b>Canvas restricted by video host:</b> Direct frame drawing is blocked by CORS. Keep the video tab in the foreground so screenshot capture can work.</span>
+                  </div>
+                )}
+
+                {isAdPlaying && (
+                  <div className="health-alert" role="alert">
+                    <span><b>Advertisement detected:</b> Capturing is automatically paused so ads don't pollute your notes.</span>
+                  </div>
+                )}
+
+                {isPausedWhilePlaying && (
+                  <div className="health-alert" role="alert">
+                    <span><b>Session is paused:</b> The video is playing, but note capturing is paused.</span>
+                    <button className="health-alert-btn" onClick={() => void handleTogglePause()}>Resume</button>
+                  </div>
+                )}
               </div>
             </section>
 
@@ -1589,10 +3102,40 @@ export default function Dashboard() {
             {/* Tab 1: Timeline */}
             {activeTab === 'tl' && (
               <div id="view">
-                {notes.length > 0 || captures.some((c) => c.processingStatus === 'pending' || c.processingStatus === 'processing' || c.processingStatus === 'failed') ? (
+                {/* Search within lecture */}
+                {notes.length > 0 && (
+                  <div className="timeline-search-bar">
+                    <input
+                      className="search timeline-search"
+                      type="search"
+                      placeholder="Search explanations, slides, key points in this lecture…"
+                      aria-label="Search within this lecture"
+                      value={timelineSearch}
+                      onChange={(e) => setTimelineSearch(e.target.value)}
+                    />
+                    {timelineSearch && (
+                      <span className="timeline-search-count">
+                        {filteredTimelineNotes.length} of {notes.length} notes
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {timelineSearch && filteredTimelineNotes.length === 0 ? (
+                  <div className="empty" style={{ padding: '24px 0' }}>
+                    <p>No moments in this lecture match "<b>{timelineSearch}</b>".</p>
+                    <button
+                      className="btn"
+                      style={{ marginTop: 10, minHeight: 32, fontSize: 12 }}
+                      onClick={() => setTimelineSearch('')}
+                    >
+                      Clear search
+                    </button>
+                  </div>
+                ) : notes.length > 0 || captures.some((c) => c.processingStatus === 'pending' || c.processingStatus === 'processing' || c.processingStatus === 'failed') ? (
                   <div className="rail">
                     {/* Render pending/processing/failed captures first if waiting */}
-                    {captures
+                    {!timelineSearch && captures
                       .filter(
                         (c) =>
                           (c.processingStatus === 'pending' || c.processingStatus === 'processing' || c.processingStatus === 'failed') &&
@@ -1644,14 +3187,19 @@ export default function Dashboard() {
                       ))}
 
                     {/* Render generated notes */}
-                    {notes.map((note) => {
+                    {filteredTimelineNotes.map((note) => {
                       const matchingCapture =
                         captures.find((c) => c.id === note.captureId) ??
                         captures.find((c) => Math.abs(c.timestampSeconds - note.startTimestampSeconds) <= 10)
                       const screenshot = matchingCapture?.screenshotDataUrl
                       const talkText = matchingCapture?.transcriptText?.trim()
+                      const isHighlighted = highlightTimestamp !== null && Math.abs(note.startTimestampSeconds - highlightTimestamp) < 15
                       return (
-                        <article key={note.id} className="note">
+                        <article
+                          key={note.id}
+                          id={`note-${note.id}`}
+                          className={`note ${isHighlighted ? 'note-highlight' : ''}`}
+                        >
                           <div className="nh">
                             <button className="ts" onClick={() => handleSeek(note.startTimestampSeconds)} title="Jump to this moment">
                               ▶ {formatTimestamp(note.startTimestampSeconds)}
@@ -1661,16 +3209,9 @@ export default function Dashboard() {
                               <button
                                 className="ib"
                                 style={{ width: 28, height: 28 }}
-                                onClick={() => {
-                                  const keyPointsText =
-                                    note.keyPoints.length > 0 ? `\n\nKey points:\n${note.keyPoints.map((p) => `- ${p}`).join('\n')}` : ''
-                                  const quoteText = talkText ? `\n\nOriginal talk: "${talkText}"` : ''
-                                  const fullText = `${formatTimestamp(note.startTimestampSeconds)} - ${note.title}\n\n${note.explanation}${keyPointsText}${quoteText}`
-                                  void navigator.clipboard.writeText(fullText)
-                                  showToast('Note copied to clipboard')
-                                }}
+                                onClick={() => void handleCopySingleNote(note, talkText, screenshot)}
                                 aria-label="Copy note"
-                                title="Copy note text"
+                                title={screenshot ? 'Copy note with image (Notion / Docs)' : 'Copy note text'}
                               >
                                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
                                   <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
@@ -1690,12 +3231,18 @@ export default function Dashboard() {
                               </button>
                             </div>
                           </div>
-                          <h3>{note.title}</h3>
-                          <p>{note.explanation}</p>
+                          <h3>
+                            <HighlightSnippet text={note.title} query={timelineSearch} />
+                          </h3>
+                          <p>
+                            <HighlightSnippet text={note.explanation} query={timelineSearch} />
+                          </p>
                           {note.keyPoints.length > 0 && (
                             <ul>
                               {note.keyPoints.map((pt, i) => (
-                                <li key={i}>{pt}</li>
+                                <li key={i}>
+                                  <HighlightSnippet text={pt} query={timelineSearch} />
+                                </li>
                               ))}
                             </ul>
                           )}
@@ -1735,14 +3282,21 @@ export default function Dashboard() {
               </div>
             )}
 
-            {/* Tab 2: Document (interactive & editable markdown) */}
+            {/* Tab 2: Document (GitHub-style Markdown viewer & editor) */}
             {activeTab === 'doc' && (
               <div id="view">
-                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                  <button className="btn" onClick={handleCopyDoc}>
+                <div className="doc-actions-bar">
+                  <button
+                    className="btn"
+                    onClick={handleCopyRichDoc}
+                    title="Copy rich notes with embedded screenshots to paste directly into Notion, Google Docs, or OneNote"
+                  >
+                    Copy with images
+                  </button>
+                  <button className="btn" onClick={handleCopyPlainMarkdown} title="Copy clean Markdown text">
                     Copy markdown
                   </button>
-                  <button className="btn pri" onClick={handleExportZip}>
+                  <button className="btn" onClick={handleExportZip} title="Download Markdown and screenshot assets bundle in a ZIP">
                     Export ZIP
                   </button>
                   {docEdited && (
@@ -1760,32 +3314,177 @@ export default function Dashboard() {
                     </button>
                   )}
                 </div>
-                <textarea
-                  className="doc-editor"
-                  value={docCustomText}
-                  onChange={(e) => {
-                    setDocCustomText(e.target.value)
-                    setDocEdited(true)
-                  }}
-                  placeholder="Notes document in markdown..."
-                  rows={18}
-                />
+
+                <div className="doc-viewer-card">
+                  <div className="doc-viewer-header">
+                    <div className="doc-nav-tabs" role="tablist" aria-label="Markdown view mode">
+                      <button
+                        className={`doc-nav-tab ${docViewMode === 'preview' ? 'active' : ''}`}
+                        onClick={() => setDocViewMode('preview')}
+                        type="button"
+                        role="tab"
+                        aria-selected={docViewMode === 'preview'}
+                      >
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                          <circle cx="12" cy="12" r="3" />
+                        </svg>
+                        Preview
+                      </button>
+                      <button
+                        className={`doc-nav-tab ${docViewMode === 'code' ? 'active' : ''}`}
+                        onClick={() => setDocViewMode('code')}
+                        type="button"
+                        role="tab"
+                        aria-selected={docViewMode === 'code'}
+                      >
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="16 18 22 12 16 6" />
+                          <polyline points="8 6 2 12 8 18" />
+                        </svg>
+                        Code
+                      </button>
+                    </div>
+
+                    <span className="doc-meta-info">
+                      {docLineCount} {docLineCount === 1 ? 'line' : 'lines'} · {docByteSize}
+                    </span>
+                  </div>
+
+                  {docViewMode === 'preview' ? (
+                    <MarkdownPreview
+                      markdown={docCustomText}
+                      captures={captures}
+                      onSeek={handleSeek}
+                      onImageClick={(src) => setPreviewZoomSrc(src)}
+                    />
+                  ) : (
+                    <textarea
+                      className="doc-editor"
+                      value={docCustomText}
+                      onChange={(e) => {
+                        setDocCustomText(e.target.value)
+                        setDocEdited(true)
+                      }}
+                      placeholder="Notes document in markdown..."
+                      rows={20}
+                    />
+                  )}
+                </div>
               </div>
             )}
 
-            {/* Tab 3: Summary */}
+            {/* Tab 3: Summary (GitHub-style Markdown viewer & editor) */}
             {activeTab === 'sum' && (
               <div id="view">
                 {selectedSession.summary ? (
-                  <div className="card" style={{ textAlign: 'left' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                      <h3 style={{ margin: 0 }}>Review guide</h3>
-                      <button className="btn" disabled={isSummarizing} onClick={handleGenerateSummary}>
+                  <>
+                    <div className="doc-actions-bar">
+                      <button
+                        className="btn"
+                        onClick={handleCopyRichSummary}
+                        title="Copy rich summary with embedded screenshots to paste directly into Notion, Google Docs, or OneNote"
+                      >
+                        Copy with images
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={handleCopyPlainSummary}
+                        title="Copy clean summary Markdown"
+                      >
+                        Copy markdown
+                      </button>
+                      <button
+                        className="btn"
+                        disabled={isSummarizing}
+                        onClick={handleGenerateSummary}
+                        title="Regenerate review guide from current notes"
+                      >
                         {isSummarizing ? 'Updating…' : 'Regenerate summary'}
                       </button>
+                      {summaryEdited && (
+                        <>
+                          <button
+                            className="btn pri"
+                            onClick={handleSaveSummaryEdits}
+                            title="Save edited summary changes"
+                          >
+                            Save edits
+                          </button>
+                          <button
+                            className="btn"
+                            onClick={() => {
+                              if (selectedSession) {
+                                setSummaryCustomText(selectedSession.summary || '')
+                                setSummaryEdited(false)
+                                showToast('Reset summary to generated version')
+                              }
+                            }}
+                            title="Discard manual edits and revert to AI generated summary"
+                          >
+                            Reset edits
+                          </button>
+                        </>
+                      )}
                     </div>
-                    <pre style={{ background: 'transparent', border: 0, padding: 0 }}>{selectedSession.summary}</pre>
-                  </div>
+
+                    <div className="doc-viewer-card">
+                      <div className="doc-viewer-header">
+                        <div className="doc-nav-tabs" role="tablist" aria-label="Summary view mode">
+                          <button
+                            className={`doc-nav-tab ${summaryViewMode === 'preview' ? 'active' : ''}`}
+                            onClick={() => setSummaryViewMode('preview')}
+                            type="button"
+                            role="tab"
+                            aria-selected={summaryViewMode === 'preview'}
+                          >
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                              <circle cx="12" cy="12" r="3" />
+                            </svg>
+                            Preview
+                          </button>
+                          <button
+                            className={`doc-nav-tab ${summaryViewMode === 'code' ? 'active' : ''}`}
+                            onClick={() => setSummaryViewMode('code')}
+                            type="button"
+                            role="tab"
+                            aria-selected={summaryViewMode === 'code'}
+                          >
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
+                              <polyline points="16 18 22 12 16 6" />
+                              <polyline points="8 6 2 12 8 18" />
+                            </svg>
+                            Code
+                          </button>
+                        </div>
+
+                        <span className="doc-meta-info">
+                          {summaryLineCount} {summaryLineCount === 1 ? 'line' : 'lines'} · {summaryByteSize}
+                        </span>
+                      </div>
+
+                      {summaryViewMode === 'preview' ? (
+                        <MarkdownPreview
+                          markdown={summaryCustomText}
+                          captures={captures}
+                          onSeek={handleSeek}
+                          onImageClick={(src) => setPreviewZoomSrc(src)}
+                        />
+                      ) : (
+                        <textarea
+                          className="doc-editor"
+                          value={summaryCustomText}
+                          onChange={(e) => {
+                            setSummaryCustomText(e.target.value)
+                            setSummaryEdited(true)
+                          }}
+                          placeholder="Review guide in markdown..."
+                          rows={20}
+                        />
+                      )}
+                    </div>
+                  </>
                 ) : (
                   <div className="card">
                     <h3>No summary yet</h3>
@@ -1859,88 +3558,171 @@ export default function Dashboard() {
 
                 {/* Proposals Feed */}
                 <div className="ask-proposals">
+                  {isAskingAi && (
+                    <div className="ask-proposal-card" style={{ opacity: 0.85 }}>
+                      <div className="ask-proposal-top">
+                        <span className="ask-badge pending">
+                          <span className="badge-dot" />
+                          Generating AI note…
+                        </span>
+                      </div>
+                      <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--mute)' }}>
+                        Synthesizing concepts, technical deep dives, and structured Markdown notes…
+                      </p>
+                    </div>
+                  )}
+
                   {askProposals
                     .filter((p) => p.sessionId === selectedSession.id)
-                    .map((proposal) => (
-                      <article key={proposal.id} className={`ask-proposal-card ${proposal.added ? 'is-added' : ''}`}>
-                        <div className="ask-proposal-top">
-                          <div className="ask-proposal-meta">
-                            {proposal.added ? (
-                              <span className="ask-badge added">
-                                <svg className="badge-icon" viewBox="0 0 24 24" fill="none" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="20 6 9 17 4 12" />
-                                </svg>
-                                Added to notes
-                              </span>
-                            ) : (
-                              <span className="ask-badge pending">
-                                <span className="badge-dot" />
-                                AI proposal
-                              </span>
-                            )}
-                            <span className="ask-prompt-quote" title={proposal.prompt}>"{proposal.prompt}"</span>
+                    .map((proposal) => {
+                      const proposalMode = proposalViewModes[proposal.id] ?? 'preview'
+                      const currentText = proposalCustomText[proposal.id] ?? formatProposalMarkdown(proposal)
+                      const pLines = currentText ? currentText.split('\n').length : 0
+                      const pBytes = new Blob([currentText]).size
+                      const pByteStr = pBytes < 1024 ? `${pBytes} B` : `${(pBytes / 1024).toFixed(1)} KB`
+
+                      return (
+                        <article key={proposal.id} className={`ask-proposal-card ${proposal.added ? 'is-added' : ''}`}>
+                          <div className="ask-proposal-top">
+                            <div className="ask-proposal-meta">
+                              {proposal.added ? (
+                                <span className="ask-badge added">
+                                  <svg className="badge-icon" viewBox="0 0 24 24" fill="none" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="20 6 9 17 4 12" />
+                                  </svg>
+                                  Added to notes
+                                </span>
+                              ) : (
+                                <span className="ask-badge pending">
+                                  <span className="badge-dot" />
+                                  AI proposal
+                                </span>
+                              )}
+                              <span className="ask-prompt-quote" title={proposal.prompt}>"{proposal.prompt}"</span>
+                            </div>
+                            <button
+                              className="ask-dismiss-btn"
+                              onClick={() => handleDismissProposal(proposal.id)}
+                              title="Remove proposal"
+                              aria-label="Remove proposal"
+                            >
+                              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18" />
+                                <line x1="6" y1="6" x2="18" y2="18" />
+                              </svg>
+                            </button>
                           </div>
-                          <button
-                            className="ask-dismiss-btn"
-                            onClick={() => handleDismissProposal(proposal.id)}
-                            title="Remove proposal"
-                            aria-label="Remove proposal"
-                          >
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <line x1="18" y1="6" x2="6" y2="18" />
-                              <line x1="6" y1="6" x2="18" y2="18" />
-                            </svg>
-                          </button>
-                        </div>
 
-                        <h4 className="ask-proposal-title">{proposal.title}</h4>
-                        <p className="ask-proposal-explanation">{proposal.explanation}</p>
-
-                        {proposal.keyPoints && proposal.keyPoints.length > 0 && (
-                          <ul className="ask-proposal-points">
-                            {proposal.keyPoints.map((point, idx) => (
-                              <li key={idx}>{point}</li>
-                            ))}
-                          </ul>
-                        )}
-
-                        <div className="ask-proposal-footer">
-                          <div className="ask-footer-info">
-                            <span>At {formatTimestamp(proposal.timestampSeconds)}</span>
-                          </div>
-                          <div className="ask-footer-actions">
-                            {proposal.added ? (
-                              <>
+                          <div className="doc-viewer-card ask-proposal-viewer">
+                            <div className="doc-viewer-header">
+                              <div className="doc-nav-tabs" role="tablist" aria-label="Proposal view mode">
                                 <button
-                                  className="btn"
-                                  style={{ minHeight: 28, padding: '0 12px', fontSize: 11.5 }}
-                                  onClick={() => setActiveTab('tl')}
+                                  className={`doc-nav-tab ${proposalMode === 'preview' ? 'active' : ''}`}
+                                  onClick={() => setProposalViewModes((prev) => ({ ...prev, [proposal.id]: 'preview' }))}
+                                  type="button"
+                                  role="tab"
+                                  aria-selected={proposalMode === 'preview'}
                                 >
-                                  View in Timeline
+                                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                    <circle cx="12" cy="12" r="3" />
+                                  </svg>
+                                  Preview
                                 </button>
                                 <button
-                                  className="btn"
-                                  style={{ minHeight: 28, padding: '0 12px', fontSize: 11.5 }}
-                                  onClick={() => setActiveTab('sum')}
+                                  className={`doc-nav-tab ${proposalMode === 'code' ? 'active' : ''}`}
+                                  onClick={() => setProposalViewModes((prev) => ({ ...prev, [proposal.id]: 'code' }))}
+                                  type="button"
+                                  role="tab"
+                                  aria-selected={proposalMode === 'code'}
                                 >
-                                  View in Summary
+                                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <polyline points="16 18 22 12 16 6" />
+                                    <polyline points="8 6 2 12 8 18" />
+                                  </svg>
+                                  Code
                                 </button>
-                              </>
+                              </div>
+
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span className="doc-meta-info">
+                                  {pLines} {pLines === 1 ? 'line' : 'lines'} · {pByteStr}
+                                </span>
+                                <button
+                                  className="btn"
+                                  style={{ minHeight: 24, padding: '0 8px', fontSize: 11 }}
+                                  type="button"
+                                  onClick={() => {
+                                    void navigator.clipboard.writeText(currentText)
+                                    showToast('Proposal markdown copied')
+                                  }}
+                                  title="Copy proposal markdown"
+                                >
+                                  Copy markdown
+                                </button>
+                              </div>
+                            </div>
+
+                            {proposalMode === 'preview' ? (
+                              <MarkdownPreview
+                                markdown={currentText}
+                                captures={captures}
+                                onSeek={handleSeek}
+                                onImageClick={(src) => setPreviewZoomSrc(src)}
+                              />
                             ) : (
-                              <button
-                                className="ask-approve-btn"
-                                onClick={() => void handleApproveProposal(proposal.id)}
-                              >
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                  <polyline points="20 6 9 17 4 12" />
-                                </svg>
-                                <span>Approve & add to notes</span>
-                              </button>
+                              <textarea
+                                className="doc-editor"
+                                style={{ minHeight: 140, fontSize: 13 }}
+                                value={currentText}
+                                onChange={(e) => {
+                                  const val = e.target.value
+                                  setProposalCustomText((prev) => ({ ...prev, [proposal.id]: val }))
+                                }}
+                                rows={8}
+                                placeholder="Proposal markdown..."
+                              />
                             )}
                           </div>
-                        </div>
-                      </article>
-                    ))}
+
+                          <div className="ask-proposal-footer">
+                            <div className="ask-footer-info">
+                              <span>At {formatTimestamp(proposal.timestampSeconds)}</span>
+                            </div>
+                            <div className="ask-footer-actions">
+                              {proposal.added ? (
+                                <>
+                                  <button
+                                    className="btn"
+                                    style={{ minHeight: 28, padding: '0 12px', fontSize: 11.5 }}
+                                    onClick={() => setActiveTab('tl')}
+                                  >
+                                    View in Timeline
+                                  </button>
+                                  <button
+                                    className="btn"
+                                    style={{ minHeight: 28, padding: '0 12px', fontSize: 11.5 }}
+                                    onClick={() => setActiveTab('sum')}
+                                  >
+                                    View in Summary
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  className="ask-approve-btn"
+                                  onClick={() => void handleApproveProposal(proposal.id)}
+                                >
+                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="20 6 9 17 4 12" />
+                                  </svg>
+                                  <span>Approve & add to notes</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </article>
+                      )
+                    })}
 
                   {askProposals.filter((p) => p.sessionId === selectedSession.id).length === 0 && !isAskingAi && (
                     <div className="empty" style={{ margin: '16px 0', padding: '36px 16px' }}>
@@ -1969,6 +3751,19 @@ export default function Dashboard() {
               Add
             </button>
           </form>
+        )}
+
+        {/* Full Image Zoom Popover (shared across Timeline, Doc, Summary & Ask AI) */}
+        {previewZoomSrc && (
+          <div className="frame-preview-popover" onClick={() => setPreviewZoomSrc(null)}>
+            <div className="frame-preview-box" onClick={(e) => e.stopPropagation()}>
+              <div className="frame-preview-head">
+                <span>Slide Preview</span>
+                <button className="health-mini-btn" onClick={() => setPreviewZoomSrc(null)}>✕</button>
+              </div>
+              <img src={previewZoomSrc} alt="Slide preview" />
+            </div>
+          </div>
         )}
       </main>
 

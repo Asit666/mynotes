@@ -436,9 +436,52 @@ function extractCleanTitle(): string {
   return 'Course Video'
 }
 
+function detectCaptionAvailability(video: HTMLVideoElement): { hasCaptions: boolean; captionSource: string } {
+  if (document.querySelector('ytd-transcript-segment-renderer')) {
+    return { hasCaptions: true, captionSource: 'YouTube Subtitles' }
+  }
+  const onScreen = getOnScreenCaptionText()
+  if (onScreen) {
+    return { hasCaptions: true, captionSource: 'On-Screen Captions' }
+  }
+  if (captionBuffer.length > 0) {
+    return { hasCaptions: true, captionSource: 'Buffered Captions' }
+  }
+  const tracks = Array.from(video.textTracks ?? [])
+  const hasTextTrack = tracks.some((t) => (t.cues && t.cues.length > 0) || t.mode !== 'disabled')
+  if (hasTextTrack) {
+    return { hasCaptions: true, captionSource: 'TextTrack Cues' }
+  }
+  const visible = document.querySelector('[class*="transcript" i] [class*="segment" i], [class*="transcript" i] [class*="caption" i], [class*="subtitle" i]')
+  if (visible) {
+    return { hasCaptions: true, captionSource: 'Transcript Panel' }
+  }
+  return { hasCaptions: false, captionSource: 'None (Slide Vision)' }
+}
+
+function testCanvasFrameSupport(video: HTMLVideoElement): boolean {
+  if (!video.videoWidth || !video.videoHeight) return true
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = 1
+    canvas.height = 1
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return false
+    ctx.drawImage(video, 0, 0, 1, 1)
+    canvas.toDataURL('image/jpeg', 0.5)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function readVideoSnapshot(includeScreenshot = false): VideoSnapshot | null {
   const video = findVideo()
   if (!video) return null
+
+  const captionInfo = detectCaptionAvailability(video)
+  const canExtractFrame = testCanvasFrameSupport(video)
+  const allVids = getAllVideosInTree(document)
 
   const url = new URL(location.href)
   const isYouTube = isWithinDomain(url.hostname, 'youtube.com') || url.hostname === 'youtu.be'
@@ -479,6 +522,10 @@ function readVideoSnapshot(includeScreenshot = false): VideoSnapshot | null {
             ? 'Oracle University'
             : url.hostname,
     isAd: isAdPlaying(),
+    hasCaptions: captionInfo.hasCaptions,
+    captionSource: captionInfo.captionSource,
+    canExtractFrame,
+    videoCount: allVids.length,
   }
 
   if (includeScreenshot) {

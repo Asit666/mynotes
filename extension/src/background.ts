@@ -506,32 +506,34 @@ async function processCapture(capture: VideoCapture, session: LearningSession): 
     return
   }
 
-  try {
-    const existing = await listCaptures(session.id)
-    const completedCaptures = [...existing]
-      .filter((c) => c.id !== capture.id && c.processingStatus === 'completed' && c.transcriptText.trim())
-      .sort((a, b) => b.capturedAt - a.capturedAt)
-    const lastCompleted = completedCaptures[0]
+  if (!capture.isManual) {
+    try {
+      const existing = await listCaptures(session.id)
+      const completedCaptures = [...existing]
+        .filter((c) => c.id !== capture.id && c.processingStatus === 'completed' && c.transcriptText.trim())
+        .sort((a, b) => b.capturedAt - a.capturedAt)
+      const lastCompleted = completedCaptures[0]
 
-    if (lastCompleted) {
-      // Exact transcript match — definitely a duplicate
-      if (lastCompleted.transcriptText.trim() === cleanTranscript) {
-        await saveCapture({ ...capture, processingStatus: 'skipped' })
-        sendUpdated()
-        return
+      if (lastCompleted) {
+        // Exact transcript match — definitely a duplicate
+        if (lastCompleted.transcriptText.trim() === cleanTranscript) {
+          await saveCapture({ ...capture, processingStatus: 'skipped' })
+          sendUpdated()
+          return
+        }
+        // Fallback synthetic prompts with very close timestamps mean the same slide is still showing
+        const isSyntheticFallback = cleanTranscript.startsWith('[Visual slide at ') || cleanTranscript.startsWith('Key concepts and technical details') || cleanTranscript.startsWith('Lecture topic and key concepts')
+        const lastIsSyntheticFallback = lastCompleted.transcriptText.trim().startsWith('[Visual slide at ') || lastCompleted.transcriptText.trim().startsWith('Key concepts and technical details') || lastCompleted.transcriptText.trim().startsWith('Lecture topic and key concepts')
+        const timestampDiff = Math.abs(capture.timestampSeconds - lastCompleted.timestampSeconds)
+        if (isSyntheticFallback && lastIsSyntheticFallback && timestampDiff < 30) {
+          await saveCapture({ ...capture, processingStatus: 'skipped' })
+          sendUpdated()
+          return
+        }
       }
-      // Fallback synthetic prompts with very close timestamps mean the same slide is still showing
-      const isSyntheticFallback = cleanTranscript.startsWith('[Visual slide at ') || cleanTranscript.startsWith('Key concepts and technical details') || cleanTranscript.startsWith('Lecture topic and key concepts')
-      const lastIsSyntheticFallback = lastCompleted.transcriptText.trim().startsWith('[Visual slide at ') || lastCompleted.transcriptText.trim().startsWith('Key concepts and technical details') || lastCompleted.transcriptText.trim().startsWith('Lecture topic and key concepts')
-      const timestampDiff = Math.abs(capture.timestampSeconds - lastCompleted.timestampSeconds)
-      if (isSyntheticFallback && lastIsSyntheticFallback && timestampDiff < 30) {
-        await saveCapture({ ...capture, processingStatus: 'skipped' })
-        sendUpdated()
-        return
-      }
+    } catch (error) {
+      console.warn('Could not check previous captures for deduplication.', error)
     }
-  } catch (error) {
-    console.warn('Could not check previous captures for deduplication.', error)
   }
 
   await saveCapture({ ...capture, processingStatus: 'processing' })
@@ -571,8 +573,10 @@ async function takeCapture(
   tabId: number,
   snapshot?: VideoSnapshot,
   allowPaused = false,
+  targetSession?: LearningSession,
+  isManual = false,
 ): Promise<ExtensionResponse> {
-  const session = await activeSession()
+  const session = targetSession ?? await activeSession()
   if (!session || (session.status !== 'active' && !allowPaused)) {
     throw new Error('Start or resume a learning session before capturing.')
   }
@@ -636,7 +640,7 @@ async function takeCapture(
       throw new Error('The video changed. This session was paused so captures from different videos are not mixed.')
     }
   }
-  let screenshotDataUrl: string | undefined = snapshot?.screenshotDataUrl
+  let screenshotDataUrl: string | undefined = snapshot?.screenshotDataUrl ?? video.screenshotDataUrl
   let screenshotError: string | undefined
 
   if (!screenshotDataUrl) {
@@ -743,6 +747,7 @@ async function takeCapture(
     ...(audioBase64 && transcriptionError ? { audioBase64 } : {}),
     ...(transcriptionError ? { processingError: transcriptionError } : {}),
     processingStatus: 'pending',
+    ...(isManual ? { isManual: true } : {}),
   }
 
   await saveCapture(capture)
@@ -835,7 +840,7 @@ async function handleMessage(
         await reopenSession(session.id)
         session = (await getSession(session.id)) ?? session
       }
-      return takeCapture(session.tabId, undefined, true)
+      return takeCapture(session.tabId, undefined, true, session, true)
     }
     case 'CAPTURE_RETRY':
       return retryCapture(message.captureId)

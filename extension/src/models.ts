@@ -37,6 +37,10 @@ export interface VideoSnapshot {
   platformName: string
   screenshotDataUrl?: string
   isAd?: boolean
+  hasCaptions?: boolean
+  captionSource?: string
+  canExtractFrame?: boolean
+  videoCount?: number
 }
 
 export interface VideoCapture {
@@ -50,6 +54,7 @@ export interface VideoCapture {
   audioBase64?: string
   processingStatus: ProcessingStatus
   processingError?: string
+  isManual?: boolean
 }
 
 export interface GeneratedNote {

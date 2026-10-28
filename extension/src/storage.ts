@@ -150,6 +150,46 @@ export async function saveGroup(group: NoteGroup): Promise<void> {
   await chrome.storage.local.set({ note_groups: groups })
 }
 
+export async function listAllNotes(): Promise<GeneratedNote[]> {
+  const notes = await requestFromStore<GeneratedNote[]>('notes', 'readonly', (store) => store.getAll())
+  return notes.sort((left, right) => left.startTimestampSeconds - right.startTimestampSeconds)
+}
+
+export interface SearchableCapture {
+  id: string
+  sessionId: string
+  timestampSeconds: number
+  transcriptText: string
+}
+
+export async function listSearchableCaptures(): Promise<SearchableCapture[]> {
+  const database = await openDatabase()
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction('captures', 'readonly')
+    const store = transaction.objectStore('captures')
+    const results: SearchableCapture[] = []
+    const request = store.openCursor()
+    request.onsuccess = () => {
+      const cursor = request.result
+      if (cursor) {
+        const val = cursor.value as VideoCapture
+        if (val.transcriptText && val.transcriptText.trim()) {
+          results.push({
+            id: val.id,
+            sessionId: val.sessionId,
+            timestampSeconds: val.timestampSeconds,
+            transcriptText: val.transcriptText,
+          })
+        }
+        cursor.continue()
+      } else {
+        resolve(results)
+      }
+    }
+    request.onerror = () => reject(request.error ?? new Error('Could not read captures.'))
+  })
+}
+
 export async function deleteGroup(id: string): Promise<void> {
   const groups = await listGroups()
   const next = groups.filter((g) => g.id !== id)
